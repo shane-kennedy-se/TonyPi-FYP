@@ -5,114 +5,100 @@ import sys
 import numpy as np
 from ultralytics import YOLO
 
-# --- FACTORY COMPATIBILITY ---
+# --- FORCE RELEASE CAMERA ---
+# This command stops the factory app from hogging the camera
+os.system("sudo systemctl stop mjpg_streamer")
+time.sleep(1) # Wait for it to let go
+
+# --- CONFIG ---
+IMG_W, IMG_H = 640, 480
+CENTER_X = IMG_W // 2
+CENTER_Y = IMG_H // 2
+MODEL_PATH = "/home/pi/FYP_Robot/modules/cardboard_v1.pt"
+
+# --- FACTORY ROBOT SDK ---
 sys.path.append('/home/pi/TonyPi/HiwonderSDK')
 try:
     import hiwonder.ros_robot_controller_sdk as rrc
     from hiwonder.Controller import Controller
     board = rrc.Board()
     ctl = Controller(board)
+    print("[VISION] Real Robot Hardware Connected.")
 except:
-    print("[VISION] Simulation Mode (No Servos)")
+    print("[VISION] WARNING: Using Simulation Mode (No Servos)")
     ctl = None
-
-# --- CONSTANTS ---
-IMG_W, IMG_H = 640, 480
-CENTER_X, CENTER_Y = IMG_W // 2, IMG_H // 2
-
-# --- ABSOLUTE MODEL PATH (CRITICAL FIX) ---
-MODEL_PATH = "/home/pi/FYP_Robot/modules/cardboard_v1.pt"
-
-class PID:
-    def __init__(self, P=0.1, I=0.0, D=0.0):
-        self.Kp, self.Ki, self.Kd = P, I, D
-        self.clear()
-    def clear(self):
-        self.SetPoint = 0.0
-        self.last_error = 0.0
-        self.output = 0.0
-    def update(self, feedback_value):
-        error = self.SetPoint - feedback_value
-        self.output = (self.Kp * error) + (self.Kd * (error - self.last_error))
-        self.last_error = error
-        return self.output
-
-pid_X = PID(P=0.06, D=0.005)
-pid_Y = PID(P=0.06, D=0.005)
 
 class VisionDetector:
     def __init__(self):
-        # 1. Load Model (With explicit check)
+        # 1. Load Model
         if os.path.exists(MODEL_PATH):
-            try:
-                self.model = YOLO(MODEL_PATH)
-                print(f"[VISION] YOLO Loaded from {MODEL_PATH}")
-            except Exception as e:
-                print(f"[VISION ERROR] Model corrupt? {e}")
-                self.model = None
+            self.model = YOLO(MODEL_PATH)
+            print("[VISION] YOLO Loaded.")
         else:
-            print(f"[VISION ERROR] Model NOT FOUND at {MODEL_PATH}")
+            print(f"[VISION ERROR] Model not found at {MODEL_PATH}")
             self.model = None
 
-        # 2. Connect to Camera (Direct Hardware Access)
-        self.camera = cv2.VideoCapture(0)
+        # 2. Connect to Camera (Robust Loop)
+        self.camera = None
+        # Try index 0, then 1, then -1 to find ANY working camera
+        for idx in [0, 1, -1]:
+            print(f"[VISION] Trying Camera Index {idx}...")
+            cap = cv2.VideoCapture(idx)
+            if cap.isOpened():
+                self.camera = cap
+                print(f"[VISION] Success! Connected to Camera {idx}")
+                break
+            cap.release()
         
-        # Give it a second to wake up
-        time.sleep(1)
-        
-        if self.camera.isOpened():
-            print("[VISION] Camera Connected (Index 0).")
-        else:
-            print("[VISION CRITICAL] Camera 0 Failed. Is mjpg_streamer running?")
+        if not self.camera:
+            print("[VISION CRITICAL] No Camera Found. Is the USB cable loose?")
 
-        # 3. Init Head
-        self.pan, self.tilt = 1500, 1500
+        # 3. Init Head Position
+        self.pan = 1500
+        self.tilt = 1500
         self.move_head(1500, 1500)
 
     def move_head(self, pan, tilt):
+        self.pan = max(500, min(2500, int(pan)))
+        self.tilt = max(1200, min(2500, int(tilt)))
         if ctl:
-            pan = max(500, min(2500, int(pan)))
-            tilt = max(1200, min(2500, int(tilt)))
-            ctl.set_pwm_servo_pulse(1, pan, 20)
-            ctl.set_pwm_servo_pulse(2, tilt, 20)
-        self.pan, self.tilt = pan, tilt
-
-    def get_frame(self):
-        if self.camera and self.camera.isOpened():
-            ret, frame = self.camera.read()
-            if ret: return True, frame
-        return False, None
+            ctl.set_pwm_servo_pulse(1, self.pan, 20)
+            ctl.set_pwm_servo_pulse(2, self.tilt, 20)
 
     def track_object(self):
-        # Safety check: if model didn't load, don't crash
-        if self.model is None:
-            return False, {'x': 0.5, 'y': 0.5}
+        if not self.camera or not self.camera.isOpened():
+            return False, None
 
-        ret, frame = self.get_frame()
-        if not ret or frame is None:
-            return False, {'x': 0.5, 'y': 0.5}
+        ret, frame = self.camera.read()
+        if not ret: return False, None
 
-        # Run Inference
-        results = self.model(frame, stream=True, verbose=False)
-        target = None
-        
-        for r in results:
-            for box in r.boxes:
-                if box.conf[0] > 0.5:
-                    x1, y1, x2, y2 = box.xyxy[0]
+        # Inference
+        if self.model:
+            results = self.model(frame, stream=True, verbose=False, conf=0.5)
+            target = None
+            
+            for r in results:
+                if len(r.boxes) > 0:
+                    # Find the box with highest confidence
+                    box = r.boxes[0]
+                    x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
                     cx, cy = int((x1+x2)/2), int((y1+y2)/2)
                     target = (cx, cy)
                     break
-            if target: break
-        
-        if target:
-            cx, cy = target
-            # PID Update
-            self.pan -= pid_X.update(cx)
-            self.tilt += pid_Y.update(cy)
-            self.move_head(self.pan, self.tilt)
             
-            locked = abs(cx - CENTER_X) < 40 and abs(cy - CENTER_Y) < 40
-            return locked, {'x': cx/IMG_W, 'y': cy/IMG_H}
-            
-        return False, {'x': 0.5, 'y': 0.5}
+            if target:
+                cx, cy = target
+                # Simple P-Controller for tracking
+                error_x = CENTER_X - cx
+                error_y = CENTER_Y - cy
+                
+                # Update servos (Note: '-' signs depend on servo orientation)
+                self.pan += int(error_x * 0.08)
+                self.tilt += int(error_y * 0.08)
+                self.move_head(self.pan, self.tilt)
+                
+                # Check if locked (near center)
+                locked = abs(error_x) < 50 and abs(error_y) < 50
+                return locked, {'y': cy / IMG_H}
+
+        return False, None
