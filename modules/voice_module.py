@@ -4,22 +4,16 @@ import os
 import subprocess
 import hashlib
 
-# --- CONFIGURATION (UPDATED) ---
-# Assuming 'FYP_Robot' is in the home folder: /home/pi/FYP_Robot
-# If it is somewhere else, change '/home/pi' to that location.
-PROJECT_ROOT = "/home/pi/FYP_Robot" 
-
-# Pointing to your specific folder structure
-PIPER_BINARY = os.path.join(PROJECT_ROOT, "piper_tts", "piper")
-# Using the 'Ryan' model you requested
-PIPER_MODEL = os.path.join(PROJECT_ROOT, "piper_tts", "en_US-ryan-medium.onnx")
-
-CACHE_DIR = os.path.join(PROJECT_ROOT, "sounds_cache")
+# --- ABSOLUTE PATHS (NO GUESSING) ---
+# We hardcode these to match your setup exactly.
+PIPER_BINARY = "/home/pi/FYP_Robot/piper_tts/piper"
+PIPER_MODEL = "/home/pi/FYP_Robot/piper_tts/en_US-ryan-medium.onnx"
+CACHE_DIR = "/home/pi/FYP_Robot/sounds_cache"
 
 if not os.path.exists(CACHE_DIR):
     os.makedirs(CACHE_DIR, exist_ok=True)
 
-# --- EXACT COMMAND MAPPING ---
+# --- COMMANDS ---
 HEX_COMMANDS = {
     b'\xaa\x55\x01\x00\xfb': 'greeting',
     b'\xaa\x55\x02\x00\xfb': 'sleep',
@@ -39,6 +33,7 @@ HEX_COMMANDS = {
 class WonderEcho:
     def __init__(self, baud=9600):
         self.ser = None
+        # Try all common ports
         ports = ['/dev/ttyUSB0', '/dev/ttyAMA0', '/dev/serial0']
         for port in ports:
             if os.path.exists(port):
@@ -71,27 +66,26 @@ class WonderEcho:
 def speak(text):
     if not text: return
     
-    # Check Cache
+    # 1. Check Cache
     text_hash = hashlib.md5(text.encode('utf-8')).hexdigest()
     wav_path = os.path.join(CACHE_DIR, f"{text_hash}.wav")
     if os.path.exists(wav_path):
         os.system(f"aplay -q {wav_path}")
         return
 
-    # Generate with Piper (Ryan)
+    # 2. Try Piper (With explicit error checking)
     if os.path.exists(PIPER_BINARY) and os.path.exists(PIPER_MODEL):
         try:
             clean = text.replace('"', '').replace("'", "")
-            # Added --output_file explicitly
             cmd = f'echo "{clean}" | {PIPER_BINARY} --model {PIPER_MODEL} --output_file {wav_path}'
             subprocess.run(cmd, shell=True, check=True)
             os.system(f"aplay -q {wav_path}")
             return
         except Exception as e:
-            print(f"[TTS] Piper Error: {e}")
+            print(f"[TTS ERROR] Piper failed: {e}")
     else:
-        print(f"[TTS] ERROR: Piper not found at {PIPER_BINARY}")
-    
-    # Fallback
+        print(f"[TTS ERROR] Missing Piper files at: {PIPER_BINARY}")
+
+    # 3. Last Resort Fallback
     try: os.system(f'echo "{text}" | festival --tts')
     except: pass

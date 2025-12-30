@@ -13,12 +13,15 @@ try:
     board = rrc.Board()
     ctl = Controller(board)
 except:
-    print("[VISION] Running in Simulation Mode (No Robot Hardware)")
+    print("[VISION] Simulation Mode (No Servos)")
     ctl = None
 
-# --- PID & CONFIG ---
+# --- CONSTANTS ---
 IMG_W, IMG_H = 640, 480
 CENTER_X, CENTER_Y = IMG_W // 2, IMG_H // 2
+
+# --- ABSOLUTE MODEL PATH (CRITICAL FIX) ---
+MODEL_PATH = "/home/pi/FYP_Robot/modules/cardboard_v1.pt"
 
 class PID:
     def __init__(self, P=0.1, I=0.0, D=0.0):
@@ -39,29 +42,28 @@ pid_Y = PID(P=0.06, D=0.005)
 
 class VisionDetector:
     def __init__(self):
-        # 1. Load Model
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        model_path = os.path.join(current_dir, "cardboard_v1.pt")
-        try:
-            self.model = YOLO(model_path)
-            print("[VISION] YOLO Loaded.")
-        except:
-            print("[VISION] Error: YOLO Model not found.")
+        # 1. Load Model (With explicit check)
+        if os.path.exists(MODEL_PATH):
+            try:
+                self.model = YOLO(MODEL_PATH)
+                print(f"[VISION] YOLO Loaded from {MODEL_PATH}")
+            except Exception as e:
+                print(f"[VISION ERROR] Model corrupt? {e}")
+                self.model = None
+        else:
+            print(f"[VISION ERROR] Model NOT FOUND at {MODEL_PATH}")
+            self.model = None
 
-        # 2. Connect to Camera (The Fix)
-        self.camera = None
-        
-        # Attempt 1: Hardware Index 0
+        # 2. Connect to Camera (Direct Hardware Access)
         self.camera = cv2.VideoCapture(0)
-        if not self.camera.isOpened():
-            print("[VISION] Camera 0 busy. Switching to Network Stream...")
-            # Attempt 2: Localhost Stream (Works if mjpg_streamer is running)
-            self.camera = cv2.VideoCapture('http://127.0.0.1:8080/?action=stream?dummy=param.mjpg')
+        
+        # Give it a second to wake up
+        time.sleep(1)
         
         if self.camera.isOpened():
-            print("[VISION] Camera Connected.")
+            print("[VISION] Camera Connected (Index 0).")
         else:
-            print("[VISION] CRITICAL: Could not connect to any camera.")
+            print("[VISION CRITICAL] Camera 0 Failed. Is mjpg_streamer running?")
 
         # 3. Init Head
         self.pan, self.tilt = 1500, 1500
@@ -78,14 +80,19 @@ class VisionDetector:
     def get_frame(self):
         if self.camera and self.camera.isOpened():
             ret, frame = self.camera.read()
-            return ret, frame
+            if ret: return True, frame
         return False, None
 
     def track_object(self):
+        # Safety check: if model didn't load, don't crash
+        if self.model is None:
+            return False, {'x': 0.5, 'y': 0.5}
+
         ret, frame = self.get_frame()
         if not ret or frame is None:
             return False, {'x': 0.5, 'y': 0.5}
 
+        # Run Inference
         results = self.model(frame, stream=True, verbose=False)
         target = None
         
@@ -100,12 +107,11 @@ class VisionDetector:
         
         if target:
             cx, cy = target
-            # PID Update (Minus X for servo direction)
+            # PID Update
             self.pan -= pid_X.update(cx)
             self.tilt += pid_Y.update(cy)
             self.move_head(self.pan, self.tilt)
             
-            # Lock condition: Target is near center
             locked = abs(cx - CENTER_X) < 40 and abs(cy - CENTER_Y) < 40
             return locked, {'x': cx/IMG_W, 'y': cy/IMG_H}
             
