@@ -12,7 +12,7 @@ except ImportError:
 # --- CONFIGURATION ---
 # Change this if your sensor is on a different pin!
 # Common Hiwonder pins: 11, 7, or check the labels on the expansion board.
-SENSOR_PIN = 11
+SENSOR_PIN = 24
 
 def main():
     print("------------------------------------------")
