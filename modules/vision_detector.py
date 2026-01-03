@@ -4,9 +4,9 @@ import sys
 import time
 from ultralytics import YOLO
 
-# --- FORCE RELEASE CAMERA ---
-os.system("sudo systemctl stop mjpg_streamer")
-time.sleep(1)
+# --- CONFIG ---
+# UPDATED PATH:
+MODEL_PATH = "/home/pi/FYP_Robot/resources/models/cardboard_v1.pt"
 
 # --- ROBOT SDK ---
 sys.path.append('/home/pi/TonyPi/HiwonderSDK')
@@ -16,29 +16,31 @@ try:
     board = rrc.Board()
     ctl = Controller(board)
 except:
-    print("[VISION WARNING] Robot hardware not found (Sim Mode)")
     ctl = None
-
-MODEL_PATH = "/home/pi/FYP_Robot/modules/cardboard_v1.pt"
 
 class VisionDetector:
     def __init__(self):
         # 1. Load Model
         if os.path.exists(MODEL_PATH):
-            self.model = YOLO(MODEL_PATH)
-            print("[VISION] Model Loaded.")
+            try:
+                self.model = YOLO(MODEL_PATH)
+                print("[VISION] Model Loaded.")
+            except:
+                self.model = None
+                print("[VISION ERROR] Model file corrupt.")
         else:
             self.model = None
-            print(f"[VISION ERROR] Model not found at {MODEL_PATH}")
+            print(f"[VISION ERROR] Model NOT found at: {MODEL_PATH}")
 
-        # 2. Connect Camera (Retry Loop)
+        # 2. Connect Camera
         self.camera = None
-        for i in [0, -1]:
-            cap = cv2.VideoCapture(i)
-            if cap.isOpened():
-                self.camera = cap
-                print(f"[VISION] Connected to Camera {i}")
-                break
+        # Try Index 0 first (Direct hardware)
+        cap = cv2.VideoCapture(0)
+        if cap.isOpened():
+            self.camera = cap
+            print("[VISION] Camera 0 Connected.")
+        else:
+            print("[VISION ERROR] Could not open Camera 0.")
         
         self.pan = 1500
         self.tilt = 1500
