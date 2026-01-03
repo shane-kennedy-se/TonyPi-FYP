@@ -8,6 +8,7 @@ import hashlib
 os.environ["XDG_RUNTIME_DIR"] = "/run/user/1000"
 
 BASE_DIR = "/home/pi/FYP_Robot"
+# Exact path to the binary we just reinstalled
 PIPER_BINARY = os.path.join(BASE_DIR, "piper_tts", "piper")
 PIPER_MODEL = os.path.join(BASE_DIR, "piper_tts", "en_US-ryan-medium.onnx")
 CACHE_DIR = os.path.join(BASE_DIR, "sounds_cache")
@@ -15,17 +16,15 @@ CACHE_DIR = os.path.join(BASE_DIR, "sounds_cache")
 if not os.path.exists(CACHE_DIR):
     os.makedirs(CACHE_DIR, exist_ok=True)
 
-# --- EXACT MAPPING FROM YOUR SPREADSHEET ---
+# --- COMMANDS ---
 HEX_COMMANDS = {
     b'\xaa\x55\x01\x00\xfb': 'Greeting',
     b'\xaa\x55\x02\x00\xfb': 'Sleep',
-    b'\xaa\x55\x03\x00\xfb': 'Wake Up',       # HELLO-TONY -> "Yes boss?"
-    
+    b'\xaa\x55\x03\x00\xfb': 'Wake Up',
     b'\xaa\x55\x00\x01\xfb': 'Forward',
     b'\xaa\x55\x00\x02\xfb': 'Back',
     b'\xaa\x55\x00\x03\xfb': 'Turn Left',
     b'\xaa\x55\x00\x04\xfb': 'Turn Right',
-    
     b'\xaa\x55\x00\x05\xfb': 'Peeling',
     b'\xaa\x55\x00\x06\xfb': 'Flip',
     b'\xaa\x55\x00\x07\xfb': 'Insert Label',
@@ -36,9 +35,9 @@ HEX_COMMANDS = {
 
 def speak(text):
     if not text: return
-    print(f"[ROBOT SAYS]: {text}")
+    print(f"[AI]: {text}")
     
-    # 1. Try Piper First
+    # 1. Try Piper (Ryan)
     try:
         text_hash = hashlib.md5(text.encode('utf-8')).hexdigest()
         wav_path = os.path.join(CACHE_DIR, f"{text_hash}.wav")
@@ -48,17 +47,16 @@ def speak(text):
                 clean = text.replace('"', '').replace("'", "")
                 cmd = f'echo "{clean}" | {PIPER_BINARY} --model {PIPER_MODEL} --output_file {wav_path}'
                 subprocess.run(cmd, shell=True, check=True)
-                
+        
         if os.path.exists(wav_path):
-            # Try playing with standard player, fallback to plug driver if format fails
-            os.system(f"aplay -q {wav_path} || aplay -D plughw:1,0 -q {wav_path}")
+            os.system(f"aplay -D plughw:1,0 -q {wav_path} || aplay -q {wav_path}")
             return
             
-    except Exception:
-        pass # Silently fail over to fallback
+    except Exception as e:
+        print(f"[VOICE WARN] Piper Error: {e}")
 
-    # 2. Fallback (Espeak) - Runs if Piper fails
-    os.system(f'espeak -s150 "{text}" 2>/dev/null')
+    # 2. Fallback (Robot Voice)
+    os.system(f'espeak -s150 "{text}" &')
 
 class WonderEcho:
     def __init__(self):
