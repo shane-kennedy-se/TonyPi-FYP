@@ -101,11 +101,12 @@ def main():
             
             if is_dark_now:
                 # 🛑 DANGER: TOO DARK!
+                if not was_dark_last_frame:
+                    voice_module.speak("Too dark. Stopping now.")
                 
                 # If we were doing something, STOP and SPEAK.
                 if current_state != STATE_IDLE:
                     print("⚠️ DARKNESS DETECTED! ABORTING ACTION!")
-                    voice_module.speak("Too dark. Stopping safety protocols.")
                     current_state = STATE_IDLE
                     current_task = None
                     vision.reset() # Reset vision memory
