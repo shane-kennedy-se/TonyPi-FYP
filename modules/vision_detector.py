@@ -1,106 +1,100 @@
-import cv2
 import os
 import time
+import cv2
 import sys
+import subprocess
 from ultralytics import YOLO
 
-# --- PATHS (Matches your uploaded file structure) ---
-BASE_DIR = "/home/pi/FYP_Robot"
+# CONFIGURATION
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = os.path.dirname(CURRENT_DIR) 
 MODEL_PATH = os.path.join(BASE_DIR, "resources", "models", "cardboard_v1.pt")
+FUNCTIONS_DIR = os.path.join(BASE_DIR, "Functions")
 
-# --- ROBOT HARDWARE (Real SDK) ---
-sys.path.append('/home/pi/TonyPi/HiwonderSDK')
-try:
-    import hiwonder.ros_robot_controller_sdk as rrc
-    from hiwonder.Controller import Controller
-    board = rrc.Board()
-    ctl = Controller(board)
-except:
-    ctl = None
+# Logic Settings
+CONFIDENCE_THRESHOLD = 0.4  
+CENTER_TOLERANCE = 50       
+ACTION_COOLDOWN = 5.0       
 
-class VisionDetector:
+class VisionController:
     def __init__(self):
-        # 1. LOAD MODEL (Exact logic from your file)
-        print(f"[VISION] Loading model: {MODEL_PATH}")
-        if os.path.exists(MODEL_PATH):
-            try:
-                self.model = YOLO(MODEL_PATH)
-                print("[VISION] YOLO Model Loaded successfully.")
-            except Exception as e:
-                print(f"[VISION ERROR] Model load failed: {e}")
-                self.model = None
-        else:
-            print(f"[VISION ERROR] Model file missing at {MODEL_PATH}")
+        print(f"[Vision] Loading YOLO model from: {MODEL_PATH}")
+        try:
+            self.model = YOLO(MODEL_PATH)
+            self.class_names = self.model.names
+            print(f"[Vision] Model Loaded. Classes: {self.class_names}")
+        except Exception as e:
+            print(f"[Vision] CRITICAL ERROR: Could not load model. {e}")
             self.model = None
 
-        # 2. CONNECT CAMERA (Exact logic from your file)
-        self.camera = cv2.VideoCapture(0)
-        self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-        try:
-            self.camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        except: pass
-
-        if self.camera.isOpened():
-            print("[VISION] Camera Index 0 Opened Successfully.")
-        else:
-            print("[VISION CRITICAL] Could not open Camera 0. Run 'sudo fuser -k -v /dev/video0'")
-
-        # 3. INIT HEAD POSITION
-        self.pan = 1500
-        self.tilt = 1500
-        self.move_head(1500, 1500)
-
-    def move_head(self, pan, tilt):
-        self.pan = max(500, min(2500, int(pan)))
-        self.tilt = max(1200, min(2500, int(tilt)))
-        if ctl:
-            ctl.set_pwm_servo_pulse(1, self.pan, 20)
-            ctl.set_pwm_servo_pulse(2, self.tilt, 20)
-
-    def track_object(self):
-        """
-        Returns: (locked_status, coords)
-        locked_status: True if object is centered
-        coords: {'y': normalized_height} for distance adjustment
-        """
-        if not self.camera or not self.camera.isOpened():
-            return False, None
-
-        ret, frame = self.camera.read()
-        if not ret: return False, None
-
-        if self.model:
-            # Inference (Your settings: conf=0.1, verbose=False)
-            results = self.model(frame, stream=True, verbose=False, conf=0.1)
-            
-            target = None
-            max_conf = 0.0
-
-            for r in results:
-                for box in r.boxes:
-                    # Find the most confident cardboard
-                    conf = float(box.conf[0])
-                    if conf > max_conf:
-                        x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-                        cx, cy = int((x1+x2)/2), int((y1+y2)/2)
-                        target = (cx, cy)
-                        max_conf = conf
-
-            if target:
-                cx, cy = target
-                # Simple Tracking Logic (Center the object)
-                # Image is 640x480. Center is 320x240.
-                err_x = 320 - cx
-                err_y = 240 - cy
-                
-                # Proportional Control
-                self.pan += int(err_x * 0.06)
-                self.tilt += int(err_y * 0.06)
-                self.move_head(self.pan, self.tilt)
-                
-                # Check if "Locked" (Close to center)
-                locked = abs(err_x) < 50 and abs(err_y) < 50
-                return locked, {'y': cy/480.0}
+        self.last_action_time = 0
         
-        return False, None
+        # Mapping actions (Disabled for now, but good to keep for reference)
+        self.actions = {
+            "cardboard": "SheetFlipOver.py",
+            "box": "SheetFlipOver.py"
+        }
+
+    def detect(self, frame):
+        """
+        Runs inference. Returns: (label, confidence, box_coords, center_x)
+        """
+        if not self.model:
+            return None, 0, None, 0
+
+        # Run YOLO inference
+        results = self.model(frame, verbose=False, conf=CONFIDENCE_THRESHOLD)
+        
+        best_det = None
+        max_conf = 0
+        
+        for r in results:
+            for box in r.boxes:
+                conf = float(box.conf[0])
+                cls_id = int(box.cls[0])
+                label = self.class_names[cls_id]
+                
+                # Check if it matches our target list
+                if label.lower() in self.actions and conf > max_conf:
+                    max_conf = conf
+                    x1, y1, x2, y2 = map(int, box.xyxy[0])
+                    cx = int((x1 + x2) / 2)
+                    best_det = (label, conf, (x1, y1, x2, y2), cx)
+
+        return best_det
+
+    def get_navigation_command(self, center_x, frame_width):
+        """
+        Returns a command to help the robot lock onto the target.
+        """
+        screen_center = frame_width // 2
+        error = center_x - screen_center
+        
+        if abs(error) < CENTER_TOLERANCE:
+            return "LOCKED", error
+        elif error < 0:
+            return "TURN_LEFT", error
+        else:
+            return "TURN_RIGHT", error
+
+    def run_action(self, label):
+        """
+        MOCKED: Just prints that an action would happen.
+        """
+        if time.time() - self.last_action_time < ACTION_COOLDOWN:
+            # print(f"[Vision] Cooldown active. Ignoring {label}.")
+            return False
+
+        script_name = self.actions.get(label.lower())
+        if not script_name:
+            return False
+
+        # --- ACTION DISABLED FOR VISION TESTING ---
+        print(f"[Vision] >>> LOCKED ON TARGET! (Action '{script_name}' skipped) <<<")
+        
+        # script_path = os.path.join(FUNCTIONS_DIR, script_name)
+        # subprocess.run(["python3", script_path], check=False)
+        # ------------------------------------------
+        
+        self.last_action_time = time.time()
+        return True
