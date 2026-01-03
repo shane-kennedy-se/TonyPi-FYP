@@ -1,14 +1,14 @@
 import cv2
 import os
-import sys
 import time
+import sys
 from ultralytics import YOLO
 
-# --- CONFIG ---
-# UPDATED PATH:
-MODEL_PATH = "/home/pi/FYP_Robot/resources/models/cardboard_v1.pt"
+# --- PATHS (Matches your uploaded file structure) ---
+BASE_DIR = "/home/pi/FYP_Robot"
+MODEL_PATH = os.path.join(BASE_DIR, "resources", "models", "cardboard_v1.pt")
 
-# --- ROBOT SDK ---
+# --- ROBOT HARDWARE (Real SDK) ---
 sys.path.append('/home/pi/TonyPi/HiwonderSDK')
 try:
     import hiwonder.ros_robot_controller_sdk as rrc
@@ -20,28 +20,33 @@ except:
 
 class VisionDetector:
     def __init__(self):
-        # 1. Load Model
+        # 1. LOAD MODEL (Exact logic from your file)
+        print(f"[VISION] Loading model: {MODEL_PATH}")
         if os.path.exists(MODEL_PATH):
             try:
                 self.model = YOLO(MODEL_PATH)
-                print("[VISION] Model Loaded.")
-            except:
+                print("[VISION] YOLO Model Loaded successfully.")
+            except Exception as e:
+                print(f"[VISION ERROR] Model load failed: {e}")
                 self.model = None
-                print("[VISION ERROR] Model file corrupt.")
         else:
+            print(f"[VISION ERROR] Model file missing at {MODEL_PATH}")
             self.model = None
-            print(f"[VISION ERROR] Model NOT found at: {MODEL_PATH}")
 
-        # 2. Connect Camera
-        self.camera = None
-        # Try Index 0 first (Direct hardware)
-        cap = cv2.VideoCapture(0)
-        if cap.isOpened():
-            self.camera = cap
-            print("[VISION] Camera 0 Connected.")
+        # 2. CONNECT CAMERA (Exact logic from your file)
+        self.camera = cv2.VideoCapture(0)
+        self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        try:
+            self.camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        except: pass
+
+        if self.camera.isOpened():
+            print("[VISION] Camera Index 0 Opened Successfully.")
         else:
-            print("[VISION ERROR] Could not open Camera 0.")
-        
+            print("[VISION CRITICAL] Could not open Camera 0. Run 'sudo fuser -k -v /dev/video0'")
+
+        # 3. INIT HEAD POSITION
         self.pan = 1500
         self.tilt = 1500
         self.move_head(1500, 1500)
@@ -54,28 +59,48 @@ class VisionDetector:
             ctl.set_pwm_servo_pulse(2, self.tilt, 20)
 
     def track_object(self):
-        if not self.camera: return False, None
-        
+        """
+        Returns: (locked_status, coords)
+        locked_status: True if object is centered
+        coords: {'y': normalized_height} for distance adjustment
+        """
+        if not self.camera or not self.camera.isOpened():
+            return False, None
+
         ret, frame = self.camera.read()
         if not ret: return False, None
 
         if self.model:
-            results = self.model(frame, stream=True, verbose=False, conf=0.5)
+            # Inference (Your settings: conf=0.1, verbose=False)
+            results = self.model(frame, stream=True, verbose=False, conf=0.1)
+            
+            target = None
+            max_conf = 0.0
+
             for r in results:
-                if len(r.boxes) > 0:
-                    box = r.boxes[0]
-                    x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-                    cx, cy = int((x1+x2)/2), int((y1+y2)/2)
-                    
-                    # Tracking Logic
-                    err_x = 320 - cx
-                    err_y = 240 - cy
-                    
-                    self.pan += int(err_x * 0.05)
-                    self.tilt += int(err_y * 0.05)
-                    self.move_head(self.pan, self.tilt)
-                    
-                    locked = abs(err_x) < 40 and abs(err_y) < 40
-                    return locked, {'y': cy/480}
-                    
+                for box in r.boxes:
+                    # Find the most confident cardboard
+                    conf = float(box.conf[0])
+                    if conf > max_conf:
+                        x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+                        cx, cy = int((x1+x2)/2), int((y1+y2)/2)
+                        target = (cx, cy)
+                        max_conf = conf
+
+            if target:
+                cx, cy = target
+                # Simple Tracking Logic (Center the object)
+                # Image is 640x480. Center is 320x240.
+                err_x = 320 - cx
+                err_y = 240 - cy
+                
+                # Proportional Control
+                self.pan += int(err_x * 0.06)
+                self.tilt += int(err_y * 0.06)
+                self.move_head(self.pan, self.tilt)
+                
+                # Check if "Locked" (Close to center)
+                locked = abs(err_x) < 50 and abs(err_y) < 50
+                return locked, {'y': cy/480.0}
+        
         return False, None
