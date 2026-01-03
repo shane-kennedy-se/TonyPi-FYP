@@ -8,6 +8,9 @@ class LightSensor:
         GPIO.setup(self.pin, GPIO.IN)
 
     def is_dark(self):
-        # Returns True if it is dark (Sensor Output High = Dark usually)
-        # You might need to flip this to 'return GPIO.input(self.pin) == 0' depending on your specific sensor dial
+        # Returns True if Sensor is blocked (High signal)
         return GPIO.input(self.pin) == 1
+
+    def cleanup(self):
+        # This safely releases the pin when you exit
+        GPIO.cleanup(self.pin)
