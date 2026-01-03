@@ -7,20 +7,14 @@ import subprocess
 import os
 
 # --- HARDWARE IMPORTS ---
-import hiwonder.Camera as Camera  # <--- FIXED: Use official Camera library
-try:
-    import RPi.GPIO as GPIO
-except ImportError:
-    GPIO = None
-
-# --- IMPORT MODULES ---
+import hiwonder.Camera as Camera
 from modules import voice_module
 from modules import vision_module
+from modules import light_sensor  # <--- NEW IMPORT
 
 # --- CONFIGURATION ---
 FRAME_WIDTH = 640
 FRAME_HEIGHT = 480
-LIGHT_SENSOR_PIN = 11  # CHECK THIS PIN ON YOUR ROBOT!
 
 # ROBOT STATES
 STATE_IDLE = "IDLE"           
@@ -33,20 +27,6 @@ latest_result = None
 running = True
 frame_lock = threading.Lock()
 result_lock = threading.Lock()
-
-# ==========================================
-# 💡 LIGHT SENSOR SETUP
-# ==========================================
-def setup_gpio():
-    if GPIO:
-        GPIO.setmode(GPIO.BCM)
-        GPIO.setup(LIGHT_SENSOR_PIN, GPIO.IN)
-
-def check_light_sensor():
-    if GPIO is None: return True
-    # Read Pin: Assuming 1=Dark, 0=Light. Swap if needed!
-    is_dark = GPIO.input(LIGHT_SENSOR_PIN)
-    return not is_dark 
 
 # ==========================================
 # 🧠 VISION THREAD
@@ -76,12 +56,13 @@ def main():
     print("------------------------------------------")
 
     # 1. Setup Hardware
-    setup_gpio()
     voice = voice_module.WonderEcho()
     vision = vision_module.VisionController()
     
-    # --- CAMERA FIX START ---
-    # We use the Hiwonder Camera class instead of cv2.VideoCapture(0)
+    # Initialize your specific Light Sensor on Pin 24
+    sensor = light_sensor.LightSensor(pin=24)
+
+    # 2. Open Camera
     print("📷 Opening Hiwonder Camera...")
     try:
         cap = Camera.Camera()
@@ -89,9 +70,8 @@ def main():
     except Exception as e:
         print(f"❌ CRITICAL: Could not open camera. {e}")
         return
-    # --- CAMERA FIX END ---
 
-    # 2. Start Vision Brain
+    # 3. Start Vision Brain
     ai_thread = threading.Thread(target=inference_worker, args=(vision,))
     ai_thread.daemon = True
     ai_thread.start()
@@ -100,6 +80,7 @@ def main():
     current_task = None
     was_dark_last_frame = False
     
+    # Initial Voice Check
     voice_module.speak("System online.")
     print("✅ System Ready.")
 
@@ -108,36 +89,42 @@ def main():
             # A. UPDATE CAMERA
             ret, frame = cap.read()
             if not ret: 
-                # If frame is bad, wait a tiny bit and try again (don't crash)
                 time.sleep(0.01)
                 continue
-                
             with frame_lock: latest_frame = frame
 
             # ==========================================
             # 🚨 SAFETY CHECK: LIGHT SENSOR
             # ==========================================
-            is_light_safe = check_light_sensor()
+            # Check if it is dark using your class
+            is_dark_now = sensor.is_dark()
             
-            if not is_light_safe:
+            if is_dark_now:
+                # 🛑 DANGER: TOO DARK!
+                
+                # If we were doing something, STOP and SPEAK.
                 if current_state != STATE_IDLE:
                     print("⚠️ DARKNESS DETECTED! ABORTING ACTION!")
-                    voice_module.speak("Too dark. Stopping.")
+                    voice_module.speak("Too dark. Stopping safety protocols.")
                     current_state = STATE_IDLE
                     current_task = None
-                    vision.is_locked = False
+                    vision.reset() # Reset vision memory
                 
-                # Visual Warning
+                # Visual Warning on Screen
                 cv2.rectangle(frame, (0,0), (FRAME_WIDTH, FRAME_HEIGHT), (0,0,255), 5)
-                cv2.putText(frame, "TOO DARK", (150, 240), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
+                cv2.putText(frame, "⚠️ TOO DARK - STOPPED", (150, 240), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
+                
                 was_dark_last_frame = True
                 
+                # Skip the rest of the loop (Don't listen or look)
                 cv2.imshow("TonyPi", frame)
                 if cv2.waitKey(1) & 0xFF == ord('q'): break
                 continue
             
-            if was_dark_last_frame and is_light_safe:
-                voice_module.speak("Light normal.")
+            # If light just came back on, notify user ONE time
+            if was_dark_last_frame and not is_dark_now:
+                voice_module.speak("Light levels normal. System ready.")
                 was_dark_last_frame = False
 
             # ==========================================
@@ -155,14 +142,17 @@ def main():
                     elif cmd == "Stop":
                         voice_module.speak("Stopping.")
                         current_state = STATE_IDLE
-                        vision.is_locked = False
+                        vision.reset()
                     
                     elif cmd in ["Peeling", "Insert Label", "Transport", "Flip"]:
-                        if check_light_sensor():
+                        # Final check before starting
+                        if not sensor.is_dark():
                             current_task = cmd
                             voice_module.speak(f"Starting {cmd}. Searching.")
                             current_state = STATE_SEARCHING
-                            vision.reset()
+                            vision.reset()  # Clear old vision memory
+                        else:
+                            voice_module.speak("Cannot start. It is too dark.")
 
             # ==========================================
             # 🤖 ROBOT LOGIC
@@ -200,7 +190,7 @@ def main():
                 success = vision.run_action(current_task)
                 
                 if not success:
-                    time.sleep(3) # Simulate action
+                    time.sleep(3) 
                 
                 voice_module.speak(f"{current_task} complete.")
                 current_state = STATE_IDLE
@@ -213,8 +203,8 @@ def main():
         print("Stopping...")
     finally:
         running = False
-        if GPIO: GPIO.cleanup()
-        cap.camera_close() # Use the proper close command
+        sensor.cleanup() # Clean up Pin 24
+        cap.camera_close()
         cv2.destroyAllWindows()
         ai_thread.join()
 
