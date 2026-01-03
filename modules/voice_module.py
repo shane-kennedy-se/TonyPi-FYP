@@ -46,7 +46,7 @@ HEX_COMMANDS = {
 
 def speak(text):
     if not text: return
-    print(f"[AI Speaking]: {text}")
+    print(f"[Tony Speaking]: {text}")
     
     # 1. Try Piper (Ryan High Quality)
     try:
@@ -61,7 +61,7 @@ def speak(text):
             # We call Piper using the module syntax via our venv python
             # This is safer than calling a binary directly
             cmd = f'echo "{clean_text}" | {VENV_PYTHON} -m piper --model {PIPER_MODEL} --output_file {wav_path}'
-            subprocess.run(cmd, shell=True, check=True)
+            subprocess.run(cmd, shell=True, check=True, stderr=subprocess.DEVNULL)
         
         # Play the file
         if os.path.exists(wav_path):
