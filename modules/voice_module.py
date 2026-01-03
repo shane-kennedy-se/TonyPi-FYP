@@ -9,15 +9,17 @@ import hashlib
 os.environ["XDG_RUNTIME_DIR"] = "/run/user/1000"
 
 # DIRECTORY SETUP
-# We assume this file is inside /home/pi/FYP_Robot
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# 1. Get the directory where THIS file (voice_module.py) is located (e.g., .../FYP_Robot/modules)
+CURRENT_FILE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# 1. Point to the Virtual Environment python we created
-# This ensures we use the Piper we just installed
+# 2. Go ONE LEVEL UP to find the main robot folder (e.g., .../FYP_Robot)
+# This is crucial because 'piper_venv' and 'piper_models' are in the main folder, not inside 'modules'
+BASE_DIR = os.path.dirname(CURRENT_FILE_DIR)
+
+# 3. Point to the Virtual Environment python we created
 VENV_PYTHON = os.path.join(BASE_DIR, "piper_venv/bin/python3")
 
-# 2. Point to the HIGH quality model we downloaded
-# (If you downloaded 'medium' before, change 'high' to 'medium' here)
+# 4. Point to the HIGH quality model we downloaded
 PIPER_MODEL = os.path.join(BASE_DIR, "piper_models/en_US-ryan-high.onnx")
 
 CACHE_DIR = os.path.join(BASE_DIR, "sounds_cache")

@@ -1,6 +1,16 @@
 #!/usr/bin/python3
 import time
-import voice_module
+import sys
+import os
+
+# --- IMPORT FIX ---
+# This tells Python to look inside the 'modules' folder
+try:
+    from modules import voice_module
+except ImportError:
+    # Fallback: simple import if you move the file back to the main folder later
+    import voice_module
+# ------------------
 
 # Define the responses for the debug test
 RESPONSES = {
