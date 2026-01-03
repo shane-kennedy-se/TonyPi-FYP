@@ -162,8 +162,7 @@ def main():
                             current_task = cmd
                             voice_module.speak(f"Starting {cmd}. Searching.")
                             current_state = STATE_SEARCHING
-                            vision.is_locked = False 
-                            vision.center_history.clear()
+                            vision.reset()
 
             # ==========================================
             # 🤖 ROBOT LOGIC
