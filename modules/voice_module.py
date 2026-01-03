@@ -5,18 +5,27 @@ import subprocess
 import hashlib
 
 # --- CONFIG ---
+# Set audio output to headphone jack/HDMI (standard Pi behavior)
 os.environ["XDG_RUNTIME_DIR"] = "/run/user/1000"
 
-BASE_DIR = "/home/pi/FYP_Robot"
-# Exact path to the binary we just reinstalled
-PIPER_BINARY = os.path.join(BASE_DIR, "piper_tts", "piper")
-PIPER_MODEL = os.path.join(BASE_DIR, "piper_tts", "en_US-ryan-medium.onnx")
+# DIRECTORY SETUP
+# We assume this file is inside /home/pi/FYP_Robot
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# 1. Point to the Virtual Environment python we created
+# This ensures we use the Piper we just installed
+VENV_PYTHON = os.path.join(BASE_DIR, "piper_venv/bin/python3")
+
+# 2. Point to the HIGH quality model we downloaded
+# (If you downloaded 'medium' before, change 'high' to 'medium' here)
+PIPER_MODEL = os.path.join(BASE_DIR, "piper_models/en_US-ryan-high.onnx")
+
 CACHE_DIR = os.path.join(BASE_DIR, "sounds_cache")
 
 if not os.path.exists(CACHE_DIR):
     os.makedirs(CACHE_DIR, exist_ok=True)
 
-# --- COMMANDS ---
+# --- COMMANDS (From your Excel Sheet) ---
 HEX_COMMANDS = {
     b'\xaa\x55\x01\x00\xfb': 'Greeting',
     b'\xaa\x55\x02\x00\xfb': 'Sleep',
@@ -35,50 +44,60 @@ HEX_COMMANDS = {
 
 def speak(text):
     if not text: return
-    print(f"[AI]: {text}")
+    print(f"[AI Speaking]: {text}")
     
-    # 1. Try Piper (Ryan)
+    # 1. Try Piper (Ryan High Quality)
     try:
+        # Create a unique filename for this sentence
         text_hash = hashlib.md5(text.encode('utf-8')).hexdigest()
         wav_path = os.path.join(CACHE_DIR, f"{text_hash}.wav")
         
+        # Only generate if it doesn't exist yet
         if not os.path.exists(wav_path):
-            if os.path.exists(PIPER_BINARY):
-                clean = text.replace('"', '').replace("'", "")
-                cmd = f'echo "{clean}" | {PIPER_BINARY} --model {PIPER_MODEL} --output_file {wav_path}'
-                subprocess.run(cmd, shell=True, check=True)
+            clean_text = text.replace('"', '').replace("'", "")
+            
+            # We call Piper using the module syntax via our venv python
+            # This is safer than calling a binary directly
+            cmd = f'echo "{clean_text}" | {VENV_PYTHON} -m piper --model {PIPER_MODEL} --output_file {wav_path}'
+            subprocess.run(cmd, shell=True, check=True)
         
+        # Play the file
         if os.path.exists(wav_path):
-            os.system(f"aplay -D plughw:1,0 -q {wav_path} || aplay -q {wav_path}")
+            # Try hardware direct playback first, then standard aplay
+            os.system(f"aplay -q {wav_path}")
             return
             
     except Exception as e:
-        print(f"[VOICE WARN] Piper Error: {e}")
+        print(f"[VOICE WARN] Piper failed, falling back to espeak. Error: {e}")
 
-    # 2. Fallback (Robot Voice)
+    # 2. Fallback (Robot Voice - Espeak)
     os.system(f'espeak -s150 "{text}" &')
 
 class WonderEcho:
     def __init__(self):
         self.ser = None
-        ports = ['/dev/ttyAMA0', '/dev/ttyUSB0', '/dev/serial0']
+        # Note: Added /dev/ttyAMA0 as it is common on Pi
+        ports = ['/dev/ttyUSB0', '/dev/ttyAMA0', '/dev/serial0']
+        
         for port in ports:
             if os.path.exists(port):
                 try:
-                    self.ser = serial.Serial(port, 9600, timeout=0.1)
-                    print(f"[VOICE] Connected to {port}")
+                    # FIX: Changed baud rate from 9600 to 115200 to match official robot code
+                    self.ser = serial.Serial(port, 115200, timeout=0.02)
+                    print(f"[VOICE] Connected to Voice Module at {port}")
                     break
-                except: pass
+                except Exception as e:
+                    print(f"[VOICE] Failed to connect to {port}: {e}")
 
     def get_command(self):
         if not self.ser: return None
         try:
+            # The official code reads 5 bytes at once usually
             if self.ser.in_waiting > 0:
-                byte = self.ser.read(1)
-                if byte == b'\xaa':
-                    rest = self.ser.read(4)
-                    full = byte + rest
-                    if full in HEX_COMMANDS:
-                        return HEX_COMMANDS[full]
-        except: pass
+                # Read 5 bytes (header + data + footer)
+                data = self.ser.read(5)
+                if data in HEX_COMMANDS:
+                    return HEX_COMMANDS[data]
+        except: 
+            pass
         return None
