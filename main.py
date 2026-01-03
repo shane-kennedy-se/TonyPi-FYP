@@ -23,7 +23,7 @@ FRAME_HEIGHT = 480
 # 🔌 LIGHT SENSOR SETTINGS
 # Change this to the actual pin your sensor is connected to!
 # Common Hiwonder pins are often 7, 11, or similar. Check your manual.
-LIGHT_SENSOR_PIN = 11  
+LIGHT_SENSOR_PIN = 24  # GPIO Pin for Light Sensor
 
 # ROBOT STATES
 STATE_IDLE = "IDLE"           
