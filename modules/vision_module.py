@@ -29,7 +29,7 @@ class VisionController:
 
         self.last_action_time = 0
         
-        # Mapping actions (Disabled for now, but good to keep for reference)
+        # Mapping actions
         self.actions = {
             "cardboard": "SheetFlipOver.py",
             "box": "SheetFlipOver.py"
@@ -61,6 +61,12 @@ class VisionController:
                     cx = int((x1 + x2) / 2)
                     best_det = (label, conf, (x1, y1, x2, y2), cx)
 
+        # --- THE FIX IS HERE ---
+        # If we didn't find anything, return safe "empty" values 
+        # instead of None (which causes the unpack error)
+        if best_det is None:
+            return None, 0, None, 0
+            
         return best_det
 
     def get_navigation_command(self, center_x, frame_width):
@@ -82,7 +88,6 @@ class VisionController:
         MOCKED: Just prints that an action would happen.
         """
         if time.time() - self.last_action_time < ACTION_COOLDOWN:
-            # print(f"[Vision] Cooldown active. Ignoring {label}.")
             return False
 
         script_name = self.actions.get(label.lower())
@@ -90,11 +95,6 @@ class VisionController:
             return False
 
         # --- ACTION DISABLED FOR VISION TESTING ---
-        print(f"[Vision] >>> LOCKED ON TARGET! (Action '{script_name}' skipped) <<<")
-        
-        # script_path = os.path.join(FUNCTIONS_DIR, script_name)
-        # subprocess.run(["python3", script_path], check=False)
-        # ------------------------------------------
-        
+        print(f"[Vision] >>> LOCKED ON TARGET! (Action '{script_name}' simulated) <<<")
         self.last_action_time = time.time()
         return True

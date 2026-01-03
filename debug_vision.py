@@ -7,31 +7,39 @@ from modules import vision_module
 
 def main():
     print("------------------------------------------")
-    print("      YOLO VISION DEBUGGER (NO ACTIONS)   ")
+    print("      YOLO VISION DEBUGGER (SAFE MODE)    ")
     print("------------------------------------------")
     
     # 1. Initialize Vision Module
     vision = vision_module.VisionController()
     
-    # 2. Open Camera
+    # 2. Open Camera (Try index 0 first, then -1)
     cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        print("⚠️ Camera 0 failed. Trying index -1...")
+        cap = cv2.VideoCapture(-1)
+
     frame_w = 640
     frame_h = 480
     cap.set(3, frame_w)
     cap.set(4, frame_h)
 
     if not cap.isOpened():
-        print("❌ Camera failed to open.")
+        print("❌ CRITICAL: Camera failed to open. Check connection.")
         return
 
-    print("✅ System Online. Point camera at cardboard.")
+    print("✅ System Online. Window should appear momentarily.")
     print("   (Press 'q' to quit)")
 
     while True:
         ret, frame = cap.read()
-        if not ret: break
+        if not ret:
+            print("⚠️ Frame drop / Camera disconnect")
+            time.sleep(0.1)
+            continue
 
         # A. Get Detection from YOLO
+        # This will now safely return None,0,None,0 if nothing is found
         label, conf, box, cx = vision.detect(frame)
 
         if label:
@@ -53,11 +61,9 @@ def main():
                 vision.run_action(label)
                 
             elif cmd == "TURN_LEFT":
-                # Draw Arrow pointing Left
                 cv2.arrowedLine(frame, (frame_w//2, frame_h//2), (frame_w//2 - 50, frame_h//2), (255, 255, 0), 3)
             
             elif cmd == "TURN_RIGHT":
-                # Draw Arrow pointing Right
                 cv2.arrowedLine(frame, (frame_w//2, frame_h//2), (frame_w//2 + 50, frame_h//2), (255, 255, 0), 3)
 
             # Draw Bounding Box & Label
@@ -69,6 +75,7 @@ def main():
             cv2.line(frame, (frame_w//2, 0), (frame_w//2, frame_h), (100, 100, 100), 1)
 
         else:
+            # Nothing detected - Just show "Scanning"
             cv2.putText(frame, "Scanning...", (10, 40), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (100, 100, 100), 2)
 
