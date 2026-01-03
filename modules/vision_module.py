@@ -11,9 +11,12 @@ BASE_DIR = os.path.dirname(CURRENT_DIR)
 MODEL_PATH = os.path.join(BASE_DIR, "resources", "models", "cardboard_v1.pt")
 FUNCTIONS_DIR = os.path.join(BASE_DIR, "Functions")
 
-# Logic Settings
+# --- TUNING SETTINGS ---
 CONFIDENCE_THRESHOLD = 0.4  
-CENTER_TOLERANCE = 50       
+
+# HYSTERESIS SETTINGS (The "Sticky" Lock)
+LOCK_ENTER_TOLERANCE = 50   # Must be closer than this to START locking
+LOCK_EXIT_TOLERANCE = 90    # Must be further than this to STOP locking
 ACTION_COOLDOWN = 5.0       
 
 class VisionController:
@@ -28,8 +31,9 @@ class VisionController:
             self.model = None
 
         self.last_action_time = 0
+        self.is_locked = False # Memory of current state
         
-        # Mapping actions
+        # Actions map
         self.actions = {
             "cardboard": "SheetFlipOver.py",
             "box": "SheetFlipOver.py"
@@ -61,27 +65,31 @@ class VisionController:
                     cx = int((x1 + x2) / 2)
                     best_det = (label, conf, (x1, y1, x2, y2), cx)
 
-        # --- THE FIX IS HERE ---
-        # If we didn't find anything, return safe "empty" values 
-        # instead of None (which causes the unpack error)
-        if best_det is None:
-            return None, 0, None, 0
-            
         return best_det
 
     def get_navigation_command(self, center_x, frame_width):
         """
-        Returns a command to help the robot lock onto the target.
+        Returns a command with Hysteresis (Sticky Logic).
         """
         screen_center = frame_width // 2
         error = center_x - screen_center
-        
-        if abs(error) < CENTER_TOLERANCE:
+        abs_error = abs(error)
+
+        # 1. Determine which limit to use
+        # If we are ALREADY locked, we use the wider limit (Exit Tolerance)
+        # If we are NOT locked, we use the tighter limit (Enter Tolerance)
+        limit = LOCK_EXIT_TOLERANCE if self.is_locked else LOCK_ENTER_TOLERANCE
+
+        # 2. Check status
+        if abs_error < limit:
+            self.is_locked = True
             return "LOCKED", error
-        elif error < 0:
-            return "TURN_LEFT", error
         else:
-            return "TURN_RIGHT", error
+            self.is_locked = False
+            if error < 0:
+                return "TURN_LEFT", error
+            else:
+                return "TURN_RIGHT", error
 
     def run_action(self, label):
         """
@@ -94,7 +102,7 @@ class VisionController:
         if not script_name:
             return False
 
-        # --- ACTION DISABLED FOR VISION TESTING ---
-        print(f"[Vision] >>> LOCKED ON TARGET! (Action '{script_name}' simulated) <<<")
+        # --- MOCKED OUTPUT ---
+        print(f"[Vision] >>> STABLE LOCK! TRIGGERING: {script_name} <<<")
         self.last_action_time = time.time()
         return True
