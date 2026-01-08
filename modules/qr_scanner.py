@@ -83,4 +83,24 @@ end_time_total = time.time()
 total_time = end_time_total - start_time_total
 avg_fps = frame_count / total_time if total_time > 0 else 0
 print("Script finished.")
-print(f"Processed {frame_count} frames in {total_time:.2f} seconds (Avg FPS: {avg_fps:.2f})")
+print(f"Processed {frame_count} frames in {total_time:.2f} seconds (Avg FPS: {avg_fps:.2f}")
+
+
+def decode_qr(frame):
+    """
+    Decode QR/barcodes in the given BGR frame and return a list of decoded strings.
+    Re-usable by main.py / vision controller.
+    """
+    from pyzbar import pyzbar
+    results = []
+    try:
+        barcodes = pyzbar.decode(frame)
+        for barcode in barcodes:
+            try:
+                data = barcode.data.decode("utf-8")
+                results.append(data)
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return results
