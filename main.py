@@ -10,7 +10,7 @@ import os
 import hiwonder.Camera as Camera
 from modules import voice_module
 from modules import vision_module
-from modules import light_sensor  # <--- NEW IMPORT
+from modules import light_sensor  
 
 # --- CONFIGURATION ---
 FRAME_WIDTH = 640
