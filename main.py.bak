@@ -145,17 +145,9 @@ def main():
                         current_state = STATE_IDLE
                         vision.reset()
                     
-                    # --- UPDATED COMMAND LIST HERE ---
-                    elif cmd in ["Peeling", "Insert Label", "Flip", "Transport", "Pick Up Cardboard", "Transport Cardboard"]:
+                    elif cmd in ["Peeling", "Insert Label", "Transport", "Flip"]:
                         # Final check before starting
                         if not sensor.is_dark():
-                            # ====================================================
-                            # 📝 LOGIC STEP 1: VOICE TRIGGER
-                            # ====================================================
-                            # We received a valid command (e.g., "Pick Up Cardboard").
-                            # 1. Store the command as 'current_task'.
-                            # 2. Switch state to SEARCHING.
-                            # 3. The robot will NOT act yet; it must find the box first.
                             current_task = cmd
                             voice_module.speak(f"Starting {cmd}. Searching.")
                             current_state = STATE_SEARCHING
@@ -183,12 +175,6 @@ def main():
                     if nav_cmd == "LOCKED":
                         cv2.putText(frame, "LOCKED", (x1, y1-30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,0,255), 2)
                         voice_module.speak("Target locked.")
-                        
-                        # ====================================================
-                        # 📝 LOGIC STEP 2: VISION LOCK
-                        # ====================================================
-                        # The vision system has successfully centered the cardboard.
-                        # Now we switch to ACTING to perform the physical task.
                         current_state = STATE_ACTING
                         
                     elif nav_cmd == "TURN_LEFT":
@@ -201,10 +187,6 @@ def main():
             elif current_state == STATE_ACTING:
                 cv2.putText(frame, f"TASK: {current_task}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
                 
-                # ====================================================
-                # 📝 LOGIC STEP 3: EXECUTE ACTION
-                # ====================================================
-                # We now run the specific script for the task we saved in Step 1.
                 print(f"[Main] Running action: {current_task}")
                 success = vision.run_action(current_task)
                 
