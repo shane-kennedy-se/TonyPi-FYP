@@ -33,13 +33,13 @@ def perform_task():
     global emergency_stop
     print("Task started. Touch the sensor to stop.")
 
-    for i in range(1000):  # Loop of actions
+    for i in range(10):  # Loop of actions
         if emergency_stop:
             print("Emergency stop triggered. Task terminated.")
             return  # FULL STOP — do not continue the task
 
         print("Step:", i)
-        agc.runActionGroup("walk_forward")  # example action
+        agc.runActionGroup("TurnSheetOver")  # example action
         time.sleep(0.1)
 
     print("Task completed normally.")

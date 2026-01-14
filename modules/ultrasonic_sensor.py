@@ -1,61 +1,52 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import RPi.GPIO as GPIO
+import lgpio
 import time
 
 # ----------------------------
 # GPIO Pin Configuration
 # ----------------------------
-TRIG_PIN = 23
-ECHO_PIN = 24
+TRIG_PIN = 28
+ECHO_PIN = 29
+
 
 # ----------------------------
 # GPIO Setup
 # ----------------------------
-GPIO.setmode(GPIO.BCM)
-GPIO.setwarnings(False)
+h = lgpio.gpiochip_open(0)
 
-GPIO.setup(TRIG_PIN, GPIO.OUT)
-GPIO.setup(ECHO_PIN, GPIO.IN)
+lgpio.gpio_claim_output(h, TRIG_PIN)
+lgpio.gpio_claim_input(h, ECHO_PIN)
 
-GPIO.output(TRIG_PIN, GPIO.LOW)
+lgpio.gpio_write(h, TRIG_PIN, 0)
 time.sleep(0.5)
 
 # ----------------------------
 # Ultrasonic Distance Function
 # ----------------------------
 def get_distance():
-    """
-    Measure distance using HC-SR04 ultrasonic sensor.
-    Return distance in cm.
-    """
 
     # Send trigger pulse
-    GPIO.output(TRIG_PIN, GPIO.HIGH)
+    lgpio.gpio_write(h, TRIG_PIN, 1)
     time.sleep(0.00001)
-    GPIO.output(TRIG_PIN, GPIO.LOW)
+    lgpio.gpio_write(h, TRIG_PIN, 0)
 
     start_time = time.time()
     stop_time = time.time()
 
     # Wait for echo start
-    while GPIO.input(ECHO_PIN) == 0:
+    while lgpio.gpio_read(h, ECHO_PIN) == 0:
         start_time = time.time()
 
     # Wait for echo end
-    while GPIO.input(ECHO_PIN) == 1:
+    while lgpio.gpio_read(h, ECHO_PIN) == 1:
         stop_time = time.time()
 
-    # Time difference
     time_elapsed = stop_time - start_time
 
-    # Distance calculation (speed of sound = 34300 cm/s)
     distance = (time_elapsed * 34300) / 2
-    distance = round(distance, 2)
-
-    return distance
-
+    return round(distance, 2)
 
 # ----------------------------
 # Main Test Loop
@@ -71,4 +62,4 @@ if __name__ == "__main__":
         print("\nProgram stopped by user")
 
     finally:
-        GPIO.cleanup()
+        lgpio.gpiochip_close(h)
