@@ -1,4 +1,8 @@
 #!/usr/bin/python3
+"""
+TonyPi Robot - Complete Monitoring Integration
+Sends ALL telemetry data: servo, sensors, vision, logs, battery, status, camera
+"""
 import cv2
 import time
 import sys
@@ -7,13 +11,18 @@ import subprocess
 import os
 import json
 import logging
+import socket
+import platform
+import psutil
 from datetime import datetime
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from socketserver import ThreadingMixIn
 
 # --- HARDWARE IMPORTS ---
 import hiwonder.Camera as Camera
 from modules import voice_module
 from modules import vision_module
-from modules import light_sensor  # <--- NEW IMPORT
+from modules import light_sensor
 
 # --- MQTT IMPORTS ---
 try:
@@ -23,15 +32,34 @@ except ImportError:
     MQTT_AVAILABLE = False
     print("⚠️ paho-mqtt not installed. Telemetry disabled.")
 
+# --- TonyPi SDK IMPORTS (for servo/battery data) ---
+HARDWARE_SDK_AVAILABLE = False
+board = None
+try:
+    sys.path.append('/home/pi/TonyPi')
+    sys.path.append('/home/pi/TonyPi/HiwonderSDK')
+    import hiwonder.ros_robot_controller_sdk as rrc
+    board = rrc.Board()
+    board.enable_reception(True)
+    HARDWARE_SDK_AVAILABLE = True
+    print("✅ HiWonder SDK loaded for servo/battery monitoring")
+except Exception as e:
+    print(f"⚠️ HiWonder SDK not available: {e} - Using simulated data")
+
 # --- MQTT CONFIGURATION ---
-MQTT_BROKER = os.getenv("MQTT_BROKER", "192.168.149.100")  # Default to monitoring server
+MQTT_BROKER = os.getenv("MQTT_BROKER", "192.168.149.100")
 MQTT_PORT = int(os.getenv("MQTT_PORT", 1883))
 ROBOT_ID = os.getenv("ROBOT_ID", "tonypi_fyp")
+CAMERA_STREAM_PORT = int(os.getenv("CAMERA_PORT", 8080))
 
 # MQTT Topics
 VISION_TOPIC = f"tonypi/vision/{ROBOT_ID}"
 LOGS_TOPIC = f"tonypi/logs/{ROBOT_ID}"
 SENSOR_TOPIC = f"tonypi/sensors/{ROBOT_ID}"
+SERVO_TOPIC = f"tonypi/servos/{ROBOT_ID}"
+STATUS_TOPIC = f"tonypi/status/{ROBOT_ID}"
+BATTERY_TOPIC = "tonypi/battery"
+LOCATION_TOPIC = "tonypi/location"
 
 # Global MQTT client
 mqtt_client = None
@@ -51,6 +79,10 @@ latest_result = None
 running = True
 frame_lock = threading.Lock()
 result_lock = threading.Lock()
+
+# Camera stream frame for HTTP server
+stream_frame = None
+stream_lock = threading.Lock()
 
 # ==========================================
 # 📡 MQTT TELEMETRY FUNCTIONS
@@ -158,6 +190,340 @@ def send_light_sensor_data(is_dark, pin=24):
     except Exception as e:
         pass
 
+def send_sensor(sensor_type: str, value, unit: str):
+    """Send individual sensor reading to monitoring system."""
+    global mqtt_client
+    if mqtt_client is None or not MQTT_AVAILABLE:
+        return
+    
+    try:
+        data = {
+            "robot_id": ROBOT_ID,
+            "sensor_type": sensor_type,
+            "value": value,
+            "unit": unit,
+            "timestamp": datetime.now().isoformat()
+        }
+        mqtt_client.publish(SENSOR_TOPIC, json.dumps(data))
+    except Exception as e:
+        pass
+
+def send_servo_data():
+    """Send servo status data to monitoring system."""
+    global mqtt_client, board
+    if mqtt_client is None or not MQTT_AVAILABLE:
+        return
+    
+    servo_names = ["Left Hip", "Left Knee", "Right Hip", "Right Knee", "Head Pan", "Head Tilt"]
+    servos = {}
+    
+    try:
+        for idx in range(1, 7):  # TonyPi has 6 servos
+            if HARDWARE_SDK_AVAILABLE and board:
+                try:
+                    pos = board.get_bus_servo_pulse(idx)
+                    temp = board.get_bus_servo_temp(idx)
+                    vin = board.get_bus_servo_vin(idx)
+                    
+                    angle = ((pos - 500) / 500) * 90 if pos else 0.0
+                    temperature = temp if temp else 45.0
+                    voltage = (vin / 1000.0) if vin else 5.0
+                except:
+                    angle, temperature, voltage = 0.0, 45.0, 5.0
+            else:
+                # Simulated servo data
+                import random
+                angle = random.uniform(-45, 45)
+                temperature = random.uniform(40, 55)
+                voltage = random.uniform(4.8, 5.2)
+            
+            alert = "critical" if temperature > 70 else ("warning" if temperature > 60 else "normal")
+            
+            servos[f"servo_{idx}"] = {
+                "id": idx,
+                "name": servo_names[idx - 1] if idx <= len(servo_names) else f"Servo {idx}",
+                "position": round(angle, 1),
+                "temperature": round(temperature, 1),
+                "voltage": round(voltage, 2),
+                "torque_enabled": True,
+                "alert_level": alert
+            }
+        
+        data = {
+            "robot_id": ROBOT_ID,
+            "servos": servos,
+            "servo_count": len(servos),
+            "timestamp": datetime.now().isoformat()
+        }
+        mqtt_client.publish(SERVO_TOPIC, json.dumps(data))
+    except Exception as e:
+        print(f"⚠️ Error sending servo data: {e}")
+
+def send_battery_status():
+    """Send battery status to monitoring system."""
+    global mqtt_client, board
+    if mqtt_client is None or not MQTT_AVAILABLE:
+        return
+    
+    try:
+        if HARDWARE_SDK_AVAILABLE and board:
+            voltage_mv = board.get_battery()
+            if voltage_mv:
+                voltage_v = voltage_mv / 1000.0
+                percentage = max(0, min(100, ((voltage_v - 10.0) / 2.6) * 100))
+            else:
+                voltage_v, percentage = 12.0, 100.0
+        else:
+            # Simulated battery
+            import random
+            percentage = random.uniform(70, 100)
+            voltage_v = 10.0 + (percentage / 100.0) * 2.6
+        
+        data = {
+            "robot_id": ROBOT_ID,
+            "percentage": round(percentage, 1),
+            "voltage": round(voltage_v, 2),
+            "charging": False,
+            "timestamp": datetime.now().isoformat()
+        }
+        mqtt_client.publish(BATTERY_TOPIC, json.dumps(data))
+    except Exception as e:
+        pass
+
+def get_local_ip():
+    """Get the local IP address of the robot."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except:
+        return "192.168.149.1"
+
+def get_cpu_temperature():
+    """Get CPU temperature."""
+    try:
+        with open('/sys/class/thermal/thermal_zone0/temp', 'r') as f:
+            return float(f.read()) / 1000.0
+    except:
+        return 45.0
+
+def send_status_update(status="online"):
+    """Send robot status with IP, camera URL, and complete Task Manager metrics."""
+    global mqtt_client
+    if mqtt_client is None or not MQTT_AVAILABLE:
+        return
+    
+    try:
+        ip_address = get_local_ip()
+        camera_url = f"http://{ip_address}:{CAMERA_STREAM_PORT}/?action=stream"
+        
+        # Complete Task Manager system info (matches frontend Monitoring page requirements)
+        system_info = {
+            "cpu_percent": psutil.cpu_percent(interval=0.1),
+            "memory_percent": psutil.virtual_memory().percent,
+            "disk_usage": psutil.disk_usage('/').percent,
+            "cpu_temperature": get_cpu_temperature(),
+            "uptime": time.time() - psutil.boot_time(),  # System uptime in seconds
+            "hardware_sdk": HARDWARE_SDK_AVAILABLE,
+            "platform": platform.platform()
+        }
+        
+        data = {
+            "robot_id": ROBOT_ID,
+            "status": status,
+            "ip_address": ip_address,
+            "camera_url": camera_url,
+            "system_info": system_info,
+            "timestamp": datetime.now().isoformat()
+        }
+        mqtt_client.publish(STATUS_TOPIC, json.dumps(data))
+    except Exception as e:
+        pass
+
+def send_location_update(x=0.0, y=0.0, z=0.0):
+    """Send robot location/position update."""
+    global mqtt_client
+    if mqtt_client is None or not MQTT_AVAILABLE:
+        return
+    
+    try:
+        data = {
+            "robot_id": ROBOT_ID,
+            "x": x,
+            "y": y,
+            "z": z,
+            "timestamp": datetime.now().isoformat()
+        }
+        mqtt_client.publish(LOCATION_TOPIC, json.dumps(data))
+    except Exception as e:
+        pass
+
+def send_all_sensors():
+    """Send all sensor readings (IMU, CPU temp, ultrasonic, etc.)."""
+    global board
+    
+    try:
+        # CPU Temperature
+        send_sensor("cpu_temperature", get_cpu_temperature(), "C")
+        
+        # IMU Data (if available)
+        if HARDWARE_SDK_AVAILABLE and board:
+            try:
+                imu = board.get_imu()
+                if imu:
+                    send_sensor("accelerometer_x", round(imu[0], 3), "m/s^2")
+                    send_sensor("accelerometer_y", round(imu[1], 3), "m/s^2")
+                    send_sensor("accelerometer_z", round(imu[2], 3), "m/s^2")
+                    send_sensor("gyroscope_x", round(imu[3], 2), "deg/s")
+                    send_sensor("gyroscope_y", round(imu[4], 2), "deg/s")
+                    send_sensor("gyroscope_z", round(imu[5], 2), "deg/s")
+            except:
+                pass
+            
+            # Ultrasonic distance sensor (if available via SDK)
+            try:
+                from hiwonder.Sonar import Sonar
+                sonar = Sonar()
+                distance = sonar.getDistance()
+                if distance != 99999:
+                    send_sensor("ultrasonic_distance", round(distance / 10.0, 1), "cm")
+            except:
+                # Simulated ultrasonic if not available
+                import random
+                send_sensor("ultrasonic_distance", round(random.uniform(5.0, 200.0), 1), "cm")
+        else:
+            # Simulated IMU
+            import random
+            send_sensor("accelerometer_x", round(random.uniform(-0.5, 0.5), 3), "m/s^2")
+            send_sensor("accelerometer_y", round(random.uniform(-0.5, 0.5), 3), "m/s^2")
+            send_sensor("accelerometer_z", round(random.uniform(9.5, 10.0), 3), "m/s^2")
+            send_sensor("gyroscope_x", round(random.uniform(-10, 10), 2), "deg/s")
+            send_sensor("gyroscope_y", round(random.uniform(-10, 10), 2), "deg/s")
+            send_sensor("gyroscope_z", round(random.uniform(-10, 10), 2), "deg/s")
+            # Simulated ultrasonic
+            send_sensor("ultrasonic_distance", round(random.uniform(5.0, 200.0), 1), "cm")
+    except Exception as e:
+        pass
+
+# ==========================================
+# 📷 CAMERA STREAMING SERVER (HTTP MJPEG)
+# ==========================================
+class MJPGHandler(BaseHTTPRequestHandler):
+    """HTTP handler for MJPEG camera streaming."""
+    
+    def log_message(self, format, *args):
+        pass  # Suppress logging
+    
+    def do_GET(self):
+        global stream_frame
+        
+        if self.path == '/?action=snapshot':
+            with stream_lock:
+                frame = stream_frame.copy() if stream_frame is not None else None
+            
+            if frame is not None:
+                ret, jpg = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
+                if ret:
+                    self.send_response(200)
+                    self.send_header('Content-type', 'image/jpeg')
+                    self.send_header('Access-Control-Allow-Origin', '*')
+                    self.end_headers()
+                    self.wfile.write(jpg.tobytes())
+                    return
+            self.send_error(503, 'No frame available')
+        else:
+            # MJPEG stream
+            self.send_response(200)
+            self.send_header('Content-type', 'multipart/x-mixed-replace; boundary=--boundarydonotcross')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            
+            while running:
+                try:
+                    with stream_lock:
+                        frame = stream_frame.copy() if stream_frame is not None else None
+                    
+                    if frame is not None:
+                        ret, jpg = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+                        if ret:
+                            self.wfile.write(b'--boundarydonotcross\r\n')
+                            self.send_header('Content-type', 'image/jpeg')
+                            self.send_header('Content-length', len(jpg.tobytes()))
+                            self.end_headers()
+                            self.wfile.write(jpg.tobytes())
+                    time.sleep(0.033)  # ~30fps
+                except:
+                    break
+
+class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
+    daemon_threads = True
+
+def start_camera_server():
+    """Start the MJPEG camera streaming server in background."""
+    try:
+        server = ThreadedHTTPServer(('', CAMERA_STREAM_PORT), MJPGHandler)
+        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
+        print(f"📷 Camera stream server started on port {CAMERA_STREAM_PORT}")
+        print(f"   Stream URL: http://{get_local_ip()}:{CAMERA_STREAM_PORT}/?action=stream")
+        return server
+    except Exception as e:
+        print(f"⚠️ Camera server failed to start: {e}")
+        return None
+
+# ==========================================
+# 📊 TELEMETRY WORKER THREAD
+# ==========================================
+def telemetry_worker():
+    """Background thread to send periodic telemetry data."""
+    global running
+    
+    last_servo_time = 0
+    last_battery_time = 0
+    last_sensor_time = 0
+    last_status_time = 0
+    last_location_time = 0
+    
+    # Simple location tracking (can be enhanced with actual odometry)
+    robot_location = {"x": 0.0, "y": 0.0, "z": 0.0}
+    
+    print("📊 Telemetry worker started...")
+    
+    while running:
+        try:
+            current_time = time.time()
+            
+            # Send servo data every 3 seconds
+            if current_time - last_servo_time >= 3:
+                send_servo_data()
+                last_servo_time = current_time
+            
+            # Send battery status every 30 seconds
+            if current_time - last_battery_time >= 30:
+                send_battery_status()
+                last_battery_time = current_time
+            
+            # Send all sensors every 2 seconds
+            if current_time - last_sensor_time >= 2:
+                send_all_sensors()
+                last_sensor_time = current_time
+            
+            # Send location update every 5 seconds
+            if current_time - last_location_time >= 5:
+                send_location_update(robot_location["x"], robot_location["y"], robot_location["z"])
+                last_location_time = current_time
+            
+            # Send status every 60 seconds
+            if current_time - last_status_time >= 60:
+                send_status_update("online")
+                last_status_time = current_time
+            
+            time.sleep(0.5)
+        except Exception as e:
+            time.sleep(1)
+
 # ==========================================
 # 🧠 VISION THREAD
 # ==========================================
@@ -180,44 +546,64 @@ def inference_worker(vision):
 # 🎮 MAIN CONTROLLER
 # ==========================================
 def main():
-    global latest_frame, running, latest_result
-    print("------------------------------------------")
-    print("      TONYPI ROBOT: MAIN CONTROLLER       ")
-    print("------------------------------------------")
+    global latest_frame, running, latest_result, stream_frame
+    print("=" * 50)
+    print("   TONYPI ROBOT: COMPLETE MONITORING SYSTEM")
+    print("=" * 50)
+    print(f"   Robot ID: {ROBOT_ID}")
+    print(f"   MQTT Broker: {MQTT_BROKER}:{MQTT_PORT}")
+    print(f"   Camera Stream Port: {CAMERA_STREAM_PORT}")
+    print("=" * 50)
 
     # 0. Initialize MQTT Telemetry
-    print("📡 Connecting to monitoring system...")
+    print("\n📡 Connecting to monitoring system...")
     mqtt_connected = init_mqtt()
     if mqtt_connected:
-        print("✅ Telemetry enabled")
+        print("✅ MQTT Telemetry enabled")
     else:
-        print("⚠️ Telemetry disabled - running standalone")
+        print("⚠️ MQTT Telemetry disabled - running standalone")
 
-    # 1. Setup Hardware
+    # 1. Start Camera Streaming Server (HTTP MJPEG)
+    print("\n📷 Starting camera stream server...")
+    camera_server = start_camera_server()
+
+    # 2. Setup Hardware
+    print("\n🔧 Initializing hardware...")
     voice = voice_module.WonderEcho()
     vision = vision_module.VisionController()
-    
-    # Initialize your specific Light Sensor on Pin 24
     sensor = light_sensor.LightSensor(pin=24)
+    print("✅ Voice module initialized")
+    print("✅ Vision module initialized")
+    print("✅ Light sensor initialized")
 
-    # 2. Open Camera
-    print("📷 Opening Hiwonder Camera...")
+    # 3. Open Camera
+    print("\n📷 Opening Hiwonder Camera...")
     send_log("INFO", "Opening camera...", "main")
     try:
         cap = Camera.Camera()
         cap.camera_open()
         send_log("INFO", "Camera opened successfully", "main")
+        print("✅ Camera opened successfully")
     except Exception as e:
         print(f"❌ CRITICAL: Could not open camera. {e}")
         send_log("ERROR", f"Camera open failed: {e}", "main")
         return
 
-    # 3. Start Vision Brain
-    ai_thread = threading.Thread(target=inference_worker, args=(vision,))
-    ai_thread.daemon = True
+    # 4. Start Vision AI Thread
+    ai_thread = threading.Thread(target=inference_worker, args=(vision,), daemon=True)
     ai_thread.start()
     send_log("INFO", "AI Vision thread started", "vision")
+    print("✅ AI Vision thread started")
 
+    # 5. Start Telemetry Worker Thread (sends servo, battery, sensors)
+    telemetry_thread = threading.Thread(target=telemetry_worker, daemon=True)
+    telemetry_thread.start()
+    print("✅ Telemetry worker started")
+
+    # 6. Send initial status update
+    send_status_update("online")
+    send_battery_status()
+    
     current_state = STATE_IDLE
     current_task = None
     was_dark_last_frame = False
@@ -225,7 +611,12 @@ def main():
     
     # Initial Voice Check
     voice_module.speak("System online.")
-    print("✅ System Ready.")
+    print("\n" + "=" * 50)
+    print("✅ SYSTEM READY - All monitoring active!")
+    print("=" * 50)
+    print(f"📷 Camera Stream: http://{get_local_ip()}:{CAMERA_STREAM_PORT}/?action=stream")
+    print("Press 'q' in the camera window to quit")
+    print("=" * 50 + "\n")
     send_log("INFO", "System ready and operational", "main")
 
     try:
@@ -235,7 +626,13 @@ def main():
             if not ret: 
                 time.sleep(0.01)
                 continue
-            with frame_lock: latest_frame = frame
+            
+            # Update frame for vision processing
+            with frame_lock: 
+                latest_frame = frame
+            
+            # Update frame for HTTP streaming (with annotations later)
+            # Will be updated again after drawing annotations
 
             # ==========================================
             # 🚨 SAFETY CHECK: LIGHT SENSOR
@@ -272,6 +669,10 @@ def main():
                 send_vision_data(None, current_state, nav_cmd="STOPPED_DARK")
                 
                 was_dark_last_frame = True
+                
+                # Update stream frame with warning overlay
+                with stream_lock:
+                    stream_frame = frame.copy()
                 
                 # Skip the rest of the loop (Don't listen or look)
                 cv2.imshow("TonyPi", frame)
@@ -371,19 +772,32 @@ def main():
                 current_state = STATE_IDLE
                 current_task = None
 
+            # Update stream frame for HTTP server (with all annotations)
+            with stream_lock:
+                stream_frame = frame.copy()
+            
             cv2.imshow("TonyPi", frame)
             if cv2.waitKey(1) & 0xFF == ord('q'): break
 
     except KeyboardInterrupt:
-        print("Stopping...")
+        print("\n🛑 Stopping...")
         send_log("INFO", "Shutdown requested by user", "main")
     finally:
+        print("🔄 Cleaning up...")
         running = False
+        
+        # Send offline status before disconnecting
+        send_status_update("offline")
         send_log("INFO", "Robot shutting down", "main")
-        sensor.cleanup() # Clean up Pin 24
+        time.sleep(0.5)  # Allow final messages to send
+        
+        # Cleanup hardware
+        sensor.cleanup()
         cap.camera_close()
         cv2.destroyAllWindows()
-        ai_thread.join()
+        
+        # Wait for threads
+        ai_thread.join(timeout=2)
         
         # Cleanup MQTT
         global mqtt_client
@@ -391,6 +805,8 @@ def main():
             mqtt_client.loop_stop()
             mqtt_client.disconnect()
             print("📡 Disconnected from monitoring system")
+        
+        print("✅ Shutdown complete")
 
 if __name__ == "__main__":
     main()
