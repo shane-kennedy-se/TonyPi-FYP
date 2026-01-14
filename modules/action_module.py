@@ -50,22 +50,24 @@ class RobotActions:
     """Handles all robot action sequences"""
     
     def __init__(self):
-        # Hardware setup - only if available
+    # Hardware setup - only if available
         if HARDWARE_AVAILABLE:
             self.rrc_board = rrc.Board()
             self.Board = Controller.Controller(self.rrc_board)
-            self.agc = AGC.ActionGroupControl()
-            
+
+            # FIX HERE
+            self.agc = AGC   # <-- use module directly
+
             # Touch sensor setup
             TOUCH_PIN = 18
             self.touch = Button(TOUCH_PIN, pull_up=True)
             self.emergency_stop = False
-            
+        
             def on_touch_detected():
                 self.emergency_stop = True
                 print("\n⚠ TOUCH DETECTED! EMERGENCY STOP ACTIVATED ⚠")
-                self.agc.stopAll()
-            
+                self.agc.stopAction()   # or stopAll if exists
+        
             self.touch.when_pressed = on_touch_detected
         else:
             self.rrc_board = None
@@ -73,6 +75,7 @@ class RobotActions:
             self.agc = MockAGC()
             self.touch = None
             self.emergency_stop = False
+
     
     def run_diecut_peeling(self):
         """Execute diecut peeling sequence"""

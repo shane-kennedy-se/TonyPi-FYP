@@ -1,18 +1,18 @@
 import time
 from gpiozero import Button
-from hiwonder import ActionGroupControl
+import hiwonder.ActionGroupControl as agc
 
 # ---------------------------
 # Configuration
 # ---------------------------
-TOUCH_PIN = 18  # GPIO pin for touch sensor signal
+TOUCH_PIN = 22  # GPIO pin for touch sensor signal
 
 # Touch sensor: using pull_up=True means:
 # Not touched = HIGH, Touched = LOW
 touch = Button(TOUCH_PIN, pull_up=True)
 
 # Action group controller
-agc = ActionGroupControl()
+# agc = ActionGroupControl()
 
 # Emergency stop flag
 emergency_stop = False
