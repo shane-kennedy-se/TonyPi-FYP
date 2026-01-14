@@ -20,42 +20,8 @@ except ImportError:
     YOLO_AVAILABLE = False
     YOLO = None
 
-# Action imports - handle missing modules gracefully for development
-try:
-    import hiwonder.ActionGroupControl as AGC
-    import hiwonder.Controller as Controller
-    import hiwonder.ros_robot_controller_sdk as rrc
-    from gpiozero import Button
-    HARDWARE_AVAILABLE = True
-except ImportError:
-    print("[WARNING] Hardware modules not available. Running in simulation mode.")
-    HARDWARE_AVAILABLE = False
-    
-    # Mock classes for development
-    class MockAGC:
-        @staticmethod
-        def runActionGroup(action):
-            print(f"[SIMULATION] Running action group: {action}")
-    
-    class MockController:
-        def __init__(self, board):
-            pass
-        def set_bus_servo_deviation(self, servo, deviation):
-            print(f"[SIMULATION] Setting servo {servo} to deviation {deviation}")
-    
-    class MockBoard:
-        pass
-    
-    class MockButton:
-        def __init__(self, pin, pull_up=True):
-            pass
-        def when_pressed(self, callback):
-            pass
-    
-    AGC = MockAGC()
-    Controller = MockController
-    rrc = type('MockRRC', (), {'Board': MockBoard})()
-    Button = MockButton
+# Import actions module
+from . import action_module
 
 # CONFIGURATION
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -98,29 +64,8 @@ class VisionController:
             "package": "Active"
         }
 
-        # Action hardware setup - only if hardware is available
-        if HARDWARE_AVAILABLE:
-            self.rrc_board = rrc.Board()
-            self.Board = Controller.Controller(self.rrc_board)
-            self.agc = AGC.ActionGroupControl()
-            
-            # Touch sensor setup
-            TOUCH_PIN = 18
-            self.touch = Button(TOUCH_PIN, pull_up=True)
-            self.emergency_stop = False
-            
-            def on_touch_detected():
-                self.emergency_stop = True
-                print("\n⚠ TOUCH DETECTED! EMERGENCY STOP ACTIVATED ⚠")
-                self.agc.stopAll()
-            
-            self.touch.when_pressed = on_touch_detected
-        else:
-            self.rrc_board = None
-            self.Board = MockController(None)
-            self.agc = MockAGC()
-            self.touch = None
-            self.emergency_stop = False
+        # Initialize actions module
+        self.robot_actions = action_module.RobotActions()
 
     def reset(self):
         """
@@ -184,166 +129,13 @@ class VisionController:
 
     def run_action(self, label):
         if label == "Peeling":
-            return self.run_diecut_peeling()
+            return self.robot_actions.run_diecut_peeling()
         elif label == "Insert Label":
-            return self.run_label_insertion()
+            return self.robot_actions.run_label_insertion()
         elif label == "Transport":
-            return self.run_transport_box()
+            return self.robot_actions.run_transport_box()
         elif label == "Flip":
-            return self.run_sheet_flip_over()
+            return self.robot_actions.run_sheet_flip_over()
         else:
             print(f"[Vision] Unknown action: {label}")
-            return False
-
-    def run_diecut_peeling(self):
-        print("=== TonyPi Pro: Diecut Peeling Sequence ===")
-        time.sleep(2)
-        
-        try:
-            # Step 1: Pick up the diecut
-            if self.emergency_stop: return False
-            print("Step 1: Picking up diecut...")
-            self.Board.set_bus_servo_deviation(17, 0)
-            AGC.runActionGroup("PickUpDiecut1")
-            time.sleep(0.5)
-
-            # Step 2: Perform diecut peeling
-            if self.emergency_stop: return False
-            print("Step 2a: Performing diecut peeling (left hand)...")
-            self.Board.set_bus_servo_deviation(17, -50)
-            AGC.runActionGroup("DoDiecutLeftHand")
-            time.sleep(0.5)
-
-            if self.emergency_stop: return False
-            print("Step 2b: Performing diecut peeling (right hand)...")
-            self.Board.set_bus_servo_deviation(17, 0)
-            AGC.runActionGroup("DoDiecutRightHand")
-            time.sleep(0.5)
-
-            # Step 3: Put down the diecut
-            if self.emergency_stop: return False
-            print("Step 3: Placing diecut down...")
-            self.Board.set_bus_servo_deviation(17, 0)
-            AGC.runActionGroup("PutDownDiecut1")
-            time.sleep(0.5)
-
-            print("=== Task Complete ===")
-            return True
-
-        except Exception as e:
-            print(f"[ERROR] Diecut Peeling failed: {e}")
-            return False
-
-    def run_label_insertion(self):
-        STEP_DELAY = 2
-        print("=== TonyPi Pro: Label Insertion Sequence ===")
-        time.sleep(2)
-
-        try:
-            # Step 1: Grab the label
-            if self.emergency_stop: return False
-            print("Step 1: Grabbing label...")
-            AGC.runActionGroup("GrabLabel")
-            time.sleep(STEP_DELAY)
-
-            # Step 2: Lift label for insertion
-            if self.emergency_stop: return False
-            print("Step 2: Lifting label for insertion...")
-            AGC.runActionGroup("LiftLabelInsertion")
-            time.sleep(STEP_DELAY)
-
-            # Step 3: Put label
-            if self.emergency_stop: return False
-            print("Step 3: Placing label...")
-            AGC.runActionGroup("PutLabel")
-            time.sleep(STEP_DELAY)
-
-            # Step 4: Put down label and stand up
-            if self.emergency_stop: return False
-            print("Step 4: Putting down label and standing up...")
-            AGC.runActionGroup("PutDownLabelAndStandUp")
-            time.sleep(STEP_DELAY)
-
-            print("=== Task Complete ===")
-            return True
-
-        except Exception as e:
-            print(f"[ERROR] Label Insertion failed: {e}")
-            return False
-
-    def run_transport_box(self):
-        steps_to_take = 5  # Default steps
-        print(f"=== TonyPi Pro: Transport Box Sequence ({steps_to_take} steps) ===")
-        time.sleep(2)
-
-        try:
-            # Step 1: Pick up the object
-            if self.emergency_stop: return False
-            print("Step 1: Picking up object...")
-            AGC.runActionGroup("PickUp")
-            time.sleep(0.5)
-
-            # Step 2: Walk forward
-            if self.emergency_stop: return False
-            print("Step 2: Walking forward...")
-            for i in range(steps_to_take):
-                if self.emergency_stop: return False
-                print(f"  Walking step {i+1}/{steps_to_take}...")
-                AGC.runActionGroup("WalkOneStep")
-                time.sleep(0.5)
-
-            # Step 3: Put down the object
-            if self.emergency_stop: return False
-            print("Step 3: Placing object down...")
-            AGC.runActionGroup("PutDown")
-
-            print("=== Task Complete ===")
-            return True
-
-        except Exception as e:
-            print(f"[ERROR] Transport Box failed: {e}")
-            return False
-
-    def run_sheet_flip_over(self):
-        print("=== TonyPi Pro: Sheet Flip Sequence ===")
-        time.sleep(2)
-
-        try:
-            # Step 1: Grab sheet
-            if self.emergency_stop: return False
-            print("Step 1: Grabbing sheet...")
-            self.Board.set_bus_servo_deviation(16, 57)
-            self.Board.set_bus_servo_deviation(18, 0)
-            self.agc.runActionGroup("GrabSheet")
-            time.sleep(1)
-
-            # Step 2: Pass sheet
-            if self.emergency_stop: return False
-            print("Step 2: Passing sheet...")
-            self.Board.set_bus_servo_deviation(16, 57)
-            self.Board.set_bus_servo_deviation(18, 0)
-            self.agc.runActionGroup("PassSheet")
-            time.sleep(1)
-
-            # Step 3: Change hand (flip sheet)
-            if self.emergency_stop: return False
-            print("Step 3: Changing hand (flip sheet)...")
-            self.Board.set_bus_servo_deviation(16, -34)
-            self.Board.set_bus_servo_deviation(18, -125)
-            self.agc.runActionGroup("ChangeHandSheet")
-            time.sleep(1)
-
-            # Step 4: Put down sheet
-            if self.emergency_stop: return False
-            print("Step 4: Putting down sheet...")
-            self.Board.set_bus_servo_deviation(18, 0)
-            self.agc.runActionGroup("PutDownSheet")
-            self.Board.set_bus_servo_deviation(16, 0)
-            time.sleep(1)
-
-            print("=== Task Complete ===")
-            return True
-
-        except Exception as e:
-            print(f"[ERROR] Sheet Flip Over failed: {e}")
             return False
