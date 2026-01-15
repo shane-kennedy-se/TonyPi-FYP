@@ -10,8 +10,7 @@ import os
 import hiwonder.Camera as Camera
 from modules import voice_module
 from modules import vision_module
-from modules import light_sensor  # <--- NEW IMPORT
-from modules import action_module  # <--- NEW IMPORT
+from modules import light_sensor  
 
 # --- CONFIGURATION ---
 FRAME_WIDTH = 640
@@ -59,7 +58,6 @@ def main():
     # 1. Setup Hardware
     voice = voice_module.WonderEcho()
     vision = vision_module.VisionController()
-    robot_actions = action_module.RobotActions()  # Initialize robot actions
     
     # Initialize your specific Light Sensor on Pin 24
     sensor = light_sensor.LightSensor(pin=24)
@@ -79,6 +77,7 @@ def main():
     ai_thread.start()
 
     current_state = STATE_IDLE
+    current_task = None
     was_dark_last_frame = False
     
     # Initial Voice Check
@@ -146,29 +145,21 @@ def main():
                         current_state = STATE_IDLE
                         vision.reset()
                     
-                    elif cmd in ["Peeling", "Insert Label", "Transport", "Flip"]:
+                    # --- UPDATED COMMAND LIST HERE ---
+                    elif cmd in ["Peeling", "Insert Label", "Flip", "Transport", "Pick Up Cardboard", "Transport Cardboard"]:
                         # Final check before starting
                         if not sensor.is_dark():
-                            voice_module.speak(f"Starting {cmd}.")
-                            current_state = STATE_ACTING
-                            
-                            # Execute action directly
-                            success = False
-                            if cmd == "Peeling":
-                                success = robot_actions.run_diecut_peeling()
-                            elif cmd == "Insert Label":
-                                success = robot_actions.run_label_insertion()
-                            elif cmd == "Transport":
-                                success = robot_actions.run_transport_box()
-                            elif cmd == "Flip":
-                                success = robot_actions.run_sheet_flip_over()
-                            
-                            if success:
-                                voice_module.speak(f"{cmd} complete.")
-                            else:
-                                voice_module.speak(f"{cmd} failed.")
-                            
-                            current_state = STATE_IDLE
+                            # ====================================================
+                            # 📝 LOGIC STEP 1: VOICE TRIGGER
+                            # ====================================================
+                            # We received a valid command (e.g., "Pick Up Cardboard").
+                            # 1. Store the command as 'current_task'.
+                            # 2. Switch state to SEARCHING.
+                            # 3. The robot will NOT act yet; it must find the box first.
+                            current_task = cmd
+                            voice_module.speak(f"Starting {cmd}. Searching.")
+                            current_state = STATE_SEARCHING
+                            vision.reset()  # Clear old vision memory
                         else:
                             voice_module.speak("Cannot start. It is too dark.")
 
@@ -192,6 +183,12 @@ def main():
                     if nav_cmd == "LOCKED":
                         cv2.putText(frame, "LOCKED", (x1, y1-30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,0,255), 2)
                         voice_module.speak("Target locked.")
+                        
+                        # ====================================================
+                        # 📝 LOGIC STEP 2: VISION LOCK
+                        # ====================================================
+                        # The vision system has successfully centered the cardboard.
+                        # Now we switch to ACTING to perform the physical task.
                         current_state = STATE_ACTING
                         
                     elif nav_cmd == "TURN_LEFT":
@@ -200,6 +197,23 @@ def main():
                         cv2.arrowedLine(frame, (320, 240), (370, 240), (255, 255, 0), 3)
                 else:
                     cv2.putText(frame, "Scanning...", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
+
+            elif current_state == STATE_ACTING:
+                cv2.putText(frame, f"TASK: {current_task}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                
+                # ====================================================
+                # 📝 LOGIC STEP 3: EXECUTE ACTION
+                # ====================================================
+                # We now run the specific script for the task we saved in Step 1.
+                print(f"[Main] Running action: {current_task}")
+                success = vision.run_action(current_task)
+                
+                if not success:
+                    time.sleep(3) 
+                
+                voice_module.speak(f"{current_task} complete.")
+                current_state = STATE_IDLE
+                current_task = None
 
             cv2.imshow("TonyPi", frame)
             if cv2.waitKey(1) & 0xFF == ord('q'): break
