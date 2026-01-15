@@ -46,7 +46,7 @@ class RobotActions:
         if HARDWARE_AVAILABLE:
             self.rrc_board = rrc.Board()
             self.Board = Controller.Controller(self.rrc_board)
-            self.agc = AGC.ActionGroupControl()
+            self.agc = AGC
         else:
             self.rrc_board = None
             self.Board = MockController(None)
