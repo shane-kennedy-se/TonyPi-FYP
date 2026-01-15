@@ -9,57 +9,109 @@ import time
 # ----------------------------
 TRIG_PIN = 28
 ECHO_PIN = 29
+OBSTACLE_DISTANCE_THRESHOLD = 30  # cm - obstacle detected if closer than this
+
+
+class UltrasonicSensor:
+    """Handles ultrasonic sensor for distance and obstacle detection"""
+    
+    def __init__(self, trig_pin=TRIG_PIN, echo_pin=ECHO_PIN, obstacle_threshold=OBSTACLE_DISTANCE_THRESHOLD):
+        """Initialize the ultrasonic sensor
+        
+        Args:
+            trig_pin (int): GPIO pin for trigger
+            echo_pin (int): GPIO pin for echo
+            obstacle_threshold (int): Distance threshold in cm for obstacle detection
+        """
+        self.trig_pin = trig_pin
+        self.echo_pin = echo_pin
+        self.obstacle_threshold = obstacle_threshold
+        self.last_distance = None
+        
+        try:
+            self.h = lgpio.gpiochip_open(0)
+            lgpio.gpio_claim_output(self.h, self.trig_pin)
+            lgpio.gpio_claim_input(self.h, self.echo_pin)
+            lgpio.gpio_write(self.h, self.trig_pin, 0)
+            time.sleep(0.5)
+            print(f"✅ Ultrasonic Sensor initialized (Obstacle threshold: {obstacle_threshold}cm)")
+        except Exception as e:
+            print(f"⚠️ WARNING: Could not initialize ultrasonic sensor: {e}")
+            self.h = None
+    
+    def get_distance(self):
+        """Get distance measurement in cm
+        
+        Returns:
+            float: Distance in centimeters, or None if sensor unavailable
+        """
+        if self.h is None:
+            return None
+        
+        try:
+            # Send trigger pulse
+            lgpio.gpio_write(self.h, self.trig_pin, 1)
+            time.sleep(0.00001)
+            lgpio.gpio_write(self.h, self.trig_pin, 0)
+            
+            start_time = time.time()
+            stop_time = time.time()
+            
+            # Wait for echo start
+            while lgpio.gpio_read(self.h, self.echo_pin) == 0:
+                start_time = time.time()
+            
+            # Wait for echo end
+            while lgpio.gpio_read(self.h, self.echo_pin) == 1:
+                stop_time = time.time()
+            
+            time_elapsed = stop_time - start_time
+            distance = (time_elapsed * 34300) / 2
+            self.last_distance = round(distance, 2)
+            return self.last_distance
+        except Exception as e:
+            print(f"⚠️ WARNING: Error reading ultrasonic sensor: {e}")
+            return None
+    
+    def is_obstacle_detected(self):
+        """Check if an obstacle is detected within threshold
+        
+        Returns:
+            bool: True if obstacle is near (distance < threshold), False otherwise
+        """
+        distance = self.get_distance()
+        if distance is None:
+            return False
+        return distance < self.obstacle_threshold
+    
+    def cleanup(self):
+        """Clean up GPIO resources"""
+        try:
+            if self.h is not None:
+                lgpio.gpiochip_close(self.h)
+                print("✅ Ultrasonic sensor cleaned up")
+        except Exception as e:
+            print(f"⚠️ WARNING: Error cleaning up ultrasonic sensor: {e}")
 
 
 # ----------------------------
-# GPIO Setup
-# ----------------------------
-h = lgpio.gpiochip_open(0)
-
-lgpio.gpio_claim_output(h, TRIG_PIN)
-lgpio.gpio_claim_input(h, ECHO_PIN)
-
-lgpio.gpio_write(h, TRIG_PIN, 0)
-time.sleep(0.5)
-
-# ----------------------------
-# Ultrasonic Distance Function
-# ----------------------------
-def get_distance():
-
-    # Send trigger pulse
-    lgpio.gpio_write(h, TRIG_PIN, 1)
-    time.sleep(0.00001)
-    lgpio.gpio_write(h, TRIG_PIN, 0)
-
-    start_time = time.time()
-    stop_time = time.time()
-
-    # Wait for echo start
-    while lgpio.gpio_read(h, ECHO_PIN) == 0:
-        start_time = time.time()
-
-    # Wait for echo end
-    while lgpio.gpio_read(h, ECHO_PIN) == 1:
-        stop_time = time.time()
-
-    time_elapsed = stop_time - start_time
-
-    distance = (time_elapsed * 34300) / 2
-    return round(distance, 2)
-
-# ----------------------------
-# Main Test Loop
+# Main Test Loop (for standalone testing)
 # ----------------------------
 if __name__ == "__main__":
+    sensor = UltrasonicSensor()
     try:
         while True:
-            dist = get_distance()
-            print("Ultrasonic Distance:", dist, "cm")
+            dist = sensor.get_distance()
+            if dist is not None:
+                obstacle = sensor.is_obstacle_detected()
+                status = "🚨 OBSTACLE DETECTED!" if obstacle else "✅ Clear"
+                print(f"Distance: {dist}cm - {status}")
+            else:
+                print("Sensor unavailable")
             time.sleep(0.2)
-
+    
     except KeyboardInterrupt:
         print("\nProgram stopped by user")
-
+    
     finally:
-        lgpio.gpiochip_close(h)
+        sensor.cleanup()

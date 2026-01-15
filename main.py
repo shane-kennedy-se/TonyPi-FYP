@@ -10,7 +10,8 @@ import os
 import hiwonder.Camera as Camera
 from modules import voice_module
 from modules import vision_module
-from modules import light_sensor  
+from modules import light_sensor
+from modules import ultrasonic_sensor  
 
 # --- CONFIGURATION ---
 FRAME_WIDTH = 640
@@ -59,8 +60,11 @@ def main():
     voice = voice_module.WonderEcho()
     vision = vision_module.VisionController()
     
-    # Initialize your specific Light Sensor on Pin 24
+    # Initialize Light Sensor on Pin 24
     sensor = light_sensor.LightSensor(pin=24)
+    
+    # Initialize Ultrasonic Sensor for obstacle detection
+    ultrasonic = ultrasonic_sensor.UltrasonicSensor()
 
     # 2. Open Camera
     print("📷 Opening Hiwonder Camera...")
@@ -127,6 +131,25 @@ def main():
             if was_dark_last_frame and not is_dark_now:
                 voice_module.speak("Light levels normal. System ready.")
                 was_dark_last_frame = False
+
+            # ==========================================
+            # 🚨 OBSTACLE DETECTION: ULTRASONIC SENSOR
+            # ==========================================
+            if current_state != STATE_IDLE:
+                distance = ultrasonic.get_distance()
+                if distance is not None and ultrasonic.is_obstacle_detected():
+                    print(f"⚠️ OBSTACLE DETECTED at {distance}cm! ABORTING ACTION!")
+                    voice_module.speak(f"Obstacle detected. Stopping.")
+                    
+                    # Stop current action and return to idle
+                    current_state = STATE_IDLE
+                    current_task = None
+                    vision.reset()
+                    
+                    # Visual warning
+                    cv2.rectangle(frame, (0,0), (FRAME_WIDTH, FRAME_HEIGHT), (0, 165, 255), 5)
+                    cv2.putText(frame, f"🚨 OBSTACLE: {distance}cm", (150, 240), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 165, 255), 3)
 
             # ==========================================
             # 🎤 VOICE COMMANDS
@@ -222,7 +245,8 @@ def main():
         print("Stopping...")
     finally:
         running = False
-        sensor.cleanup() # Clean up Pin 24
+        sensor.cleanup()
+        ultrasonic.cleanup()
         cap.camera_close()
         cv2.destroyAllWindows()
         ai_thread.join()
