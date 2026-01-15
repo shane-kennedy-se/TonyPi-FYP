@@ -83,6 +83,8 @@ def main():
     current_state = STATE_IDLE
     current_task = None
     was_dark_last_frame = False
+    search_start_time = None  # Track when search started
+    SEARCH_TIMEOUT = 60  # seconds - timeout if cardboard not found
     
     # Initial Voice Check
     voice_module.speak("System online.")
@@ -196,12 +198,18 @@ def main():
                 current_det = None
                 with result_lock: current_det = latest_result
                 
+                # Display distance and debug info
+                distance = ultrasonic.get_distance()
+                if distance is not None:
+                    cv2.putText(frame, f"Distance: {distance}cm", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                
                 if current_det:
                     label, conf, box, cx = current_det
                     x1, y1, x2, y2 = box
                     nav_cmd, error = vision.get_navigation_command(cx, FRAME_WIDTH)
                     
                     cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                    cv2.putText(frame, f"{label} ({conf:.2f})", (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
                     if nav_cmd == "LOCKED":
                         cv2.putText(frame, "LOCKED", (x1, y1-30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,0,255), 2)
@@ -216,10 +224,13 @@ def main():
                         
                     elif nav_cmd == "TURN_LEFT":
                         cv2.arrowedLine(frame, (320, 240), (270, 240), (255, 255, 0), 3)
+                        cv2.putText(frame, "TURN LEFT", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
                     elif nav_cmd == "TURN_RIGHT":
                         cv2.arrowedLine(frame, (320, 240), (370, 240), (255, 255, 0), 3)
+                        cv2.putText(frame, "TURN RIGHT", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
                 else:
-                    cv2.putText(frame, "Scanning...", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
+                    cv2.putText(frame, "Scanning for cardboard...", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
+                    print(f"[Main] Searching for cardboard but none detected. Model loaded: {vision.model is not None}\")"
 
             elif current_state == STATE_ACTING:
                 cv2.putText(frame, f"TASK: {current_task}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)

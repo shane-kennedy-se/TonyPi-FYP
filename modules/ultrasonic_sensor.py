@@ -10,6 +10,7 @@ import time
 TRIG_PIN = 28
 ECHO_PIN = 29
 OBSTACLE_DISTANCE_THRESHOLD = 10  # cm - obstacle detected if closer than this
+DISTANCE_BUFFER_SIZE = 5  # Number of readings to average
 
 
 class UltrasonicSensor:
@@ -27,6 +28,8 @@ class UltrasonicSensor:
         self.echo_pin = echo_pin
         self.obstacle_threshold = obstacle_threshold
         self.last_distance = None
+        self.distance_history = []  # Buffer for averaging readings
+        self.consecutive_detections = 0  # Counter for consecutive obstacle detections
         
         try:
             self.h = lgpio.gpiochip_open(0)
@@ -75,14 +78,32 @@ class UltrasonicSensor:
     
     def is_obstacle_detected(self):
         """Check if an obstacle is detected within threshold
+        Uses noise filtering with consecutive detection requirement.
         
         Returns:
-            bool: True if obstacle is near (distance < threshold), False otherwise
+            bool: True if obstacle is near (distance < threshold) consistently, False otherwise
         """
         distance = self.get_distance()
         if distance is None:
+            self.consecutive_detections = 0
             return False
-        return distance < self.obstacle_threshold
+        
+        # Add to history and keep buffer size limited
+        self.distance_history.append(distance)
+        if len(self.distance_history) > DISTANCE_BUFFER_SIZE:
+            self.distance_history.pop(0)
+        
+        # Average the readings for noise reduction
+        avg_distance = sum(self.distance_history) / len(self.distance_history)
+        
+        # Only report obstacle if it's consistently detected
+        if avg_distance < self.obstacle_threshold:
+            self.consecutive_detections += 1
+            # Require at least 2 consecutive detections to avoid false positives
+            return self.consecutive_detections >= 2
+        else:
+            self.consecutive_detections = 0
+            return False
     
     def cleanup(self):
         """Clean up GPIO resources"""

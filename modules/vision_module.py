@@ -127,6 +127,28 @@ class VisionController:
             self.is_locked = False
             return ("TURN_LEFT" if error < 0 else "TURN_RIGHT"), error
 
+    def get_all_detections(self, frame):
+        """Get all detected objects in frame for debugging
+        
+        Returns:
+            list: List of all detections with confidence scores
+        """
+        if not self.model or not YOLO_AVAILABLE:
+            return []
+        
+        results = self.model(frame, verbose=False, conf=0.1)  # Lower threshold for debug
+        all_dets = []
+        
+        for r in results:
+            for box in r.boxes:
+                conf = float(box.conf[0])
+                cls_id = int(box.cls[0])
+                label = self.class_names[cls_id]
+                x1, y1, x2, y2 = map(int, box.xyxy[0])
+                all_dets.append((label, conf, (x1, y1, x2, y2)))
+        
+        return all_dets
+
     def run_action(self, label):
         if label == "Peeling":
             return self.robot_actions.run_diecut_peeling()
