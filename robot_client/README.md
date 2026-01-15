@@ -54,6 +54,34 @@ pip install paho-mqtt psutil pyyaml
 python tonypi_client.py --broker <mqtt-server-ip>
 ```
 
+### On Raspberry Pi 4 (Without Hardware - Simulation Mode)
+
+Perfect for testing when you don't have the actual robot hardware! The client automatically detects no hardware and runs in simulation mode.
+
+**Quick Setup:**
+```bash
+# 1. Copy robot_client folder to Pi 4
+scp -r robot_client/ pi@<pi4-ip>:/home/pi/
+
+# 2. SSH into Pi 4
+ssh pi@<pi4-ip>
+
+# 3. Install minimal dependencies
+cd ~/robot_client
+pip3 install -r requirements_simulation.txt
+
+# 4. Run in simulation mode
+python3 tonypi_client.py --broker <mqtt-broker-ip>
+```
+
+**Or use the quick start script:**
+```bash
+chmod +x quick_start_pi4.sh
+./quick_start_pi4.sh <mqtt-broker-ip> [robot-id]
+```
+
+**For detailed setup instructions, see:** [`PI4_SIMULATION_SETUP.md`](PI4_SIMULATION_SETUP.md)
+
 ## Usage
 
 ### Running the Robot Client

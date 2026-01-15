@@ -281,7 +281,7 @@ def start_camera_server(port=8080, camera_device=-1, resolution=(640, 480)):
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(description="TonyPi Camera Streaming Server")
-    parser.add_argument("--port", type=int, default=8080, help="HTTP server port")
+    parser.add_argument("--port", type=int, default=8081, help="HTTP server port")
     parser.add_argument("--device", type=int, default=-1, help="Camera device index")
     parser.add_argument("--width", type=int, default=640, help="Frame width")
     parser.add_argument("--height", type=int, default=480, help="Frame height")
