@@ -15,6 +15,7 @@ HEAD_TILT_SERVO = 7   # Up-Down tilt
 # QR Detection variables
 qr_scanning = False
 
+
 def rotate_head_to_search(direction='left'):
     """
     Rotate head to search for QR code.
