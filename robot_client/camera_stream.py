@@ -224,6 +224,7 @@ class MJPGHandler(BaseHTTPRequestHandler):
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     """Handle requests in separate threads."""
     daemon_threads = True
+    allow_reuse_address = True  # Allow reuse of address after server closes
 
 
 def start_camera_server(port=8080, camera_device=-1, resolution=(640, 480)):
@@ -247,7 +248,16 @@ def start_camera_server(port=8080, camera_device=-1, resolution=(640, 480)):
         print("Warning: Camera failed to open, running with test pattern")
     
     # Start HTTP server
-    server = ThreadedHTTPServer(('', port), MJPGHandler)
+    try:
+        server = ThreadedHTTPServer(('', port), MJPGHandler)
+    except OSError as e:
+        if e.errno == 98:  # Address already in use
+            print(f"\nError: Port {port} is already in use!")
+            print(f"To fix this, run one of these commands:")
+            print(f"  sudo fuser -k {port}/tcp   # Kill process using port {port}")
+            print(f"  python camera_stream.py --port {port + 1}  # Use different port")
+            return
+        raise
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
     

@@ -678,10 +678,12 @@ class TonyPiRobotClient:
     def send_sensor_data(self):
         """Send sensor data to monitoring system."""
         if not self.is_connected:
+            logger.warning("Not connected - skipping sensor data send")
             return
         
         try:
             sensors = self.read_sensors()
+            sent_count = 0
             
             for sensor_name, value in sensors.items():
                 # Skip non-numeric values for certain sensors
@@ -695,9 +697,11 @@ class TonyPiRobotClient:
                     "timestamp": datetime.now().isoformat(),
                     "unit": self.get_sensor_unit(sensor_name)
                 }
-                self.client.publish(self.topics["sensors"], json.dumps(data))
+                result = self.client.publish(self.topics["sensors"], json.dumps(data))
+                if result.rc == 0:
+                    sent_count += 1
             
-            logger.debug(f"Sent {len(sensors)} sensor readings")
+            logger.info(f"Sent {sent_count}/{len(sensors)} sensor readings to {self.topics['sensors']}")
             
         except Exception as e:
             logger.error(f"Error sending sensor data: {e}")
@@ -705,6 +709,7 @@ class TonyPiRobotClient:
     def send_servo_data(self):
         """Send servo status data to monitoring system."""
         if not self.is_connected:
+            logger.warning("Not connected - skipping servo data send")
             return
         
         try:
@@ -717,8 +722,11 @@ class TonyPiRobotClient:
                 "timestamp": datetime.now().isoformat()
             }
             
-            self.client.publish(self.topics["servos"], json.dumps(data))
-            logger.debug(f"Sent servo data: {len(servo_data)} servos")
+            result = self.client.publish(self.topics["servos"], json.dumps(data))
+            if result.rc == 0:
+                logger.info(f"Sent servo data: {len(servo_data)} servos to {self.topics['servos']}")
+            else:
+                logger.error(f"Failed to send servo data: rc={result.rc}")
             
         except Exception as e:
             logger.error(f"Error sending servo data: {e}")
@@ -767,6 +775,7 @@ class TonyPiRobotClient:
     def send_status_update(self):
         """Send robot status update with full Task Manager metrics."""
         if not self.is_connected:
+            logger.warning("Not connected - skipping status update send")
             return
         
         try:
@@ -784,8 +793,11 @@ class TonyPiRobotClient:
                 "camera_url": camera_url
             }
             
-            self.client.publish(self.topics["status"], json.dumps(data))
-            logger.debug(f"Sent status: CPU={system_info.get('cpu_percent')}%, MEM={system_info.get('memory_percent')}%, TEMP={system_info.get('cpu_temperature')}°C")
+            result = self.client.publish(self.topics["status"], json.dumps(data))
+            if result.rc == 0:
+                logger.info(f"Sent status to {self.topics['status']}: CPU={system_info.get('cpu_percent')}%, MEM={system_info.get('memory_percent')}%, TEMP={system_info.get('cpu_temperature')}°C")
+            else:
+                logger.error(f"Failed to send status: rc={result.rc}")
             
         except Exception as e:
             logger.error(f"Error sending status: {e}")
