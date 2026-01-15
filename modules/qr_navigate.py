@@ -13,6 +13,16 @@ HEAD_TILT_SERVO = 1
 
 qr_scanning = False
 
+import threading
+
+def run_action_async(action_name):
+    t = threading.Thread(
+        target=AGC.runActionGroup,
+        args=(action_name,),
+        daemon=True
+    )
+    t.start()
+
 # ---------------- HEAD CONTROL ----------------
 def rotate_head(direction='left'):
     try:
@@ -99,19 +109,17 @@ def navigate_to_station(frame_getter, timeout=60):
                 # ------ ALIGN BODY ------
                 if x_center < frame_center - 60:
                     print("↩ Turning LEFT")
-                    AGC.runActionGroup('turn_left')
-                    time.sleep(0.3)
+                    run_action_async('turn_left')
 
                 elif x_center > frame_center + 60:
                     print("↪ Turning RIGHT")
-                    AGC.runActionGroup('turn_right')
-                    time.sleep(0.3)
+                    run_action_async('turn_right')
 
                 # ------ MOVE FORWARD ------
                 else:
                     if qr_width < 120:
                         print("→ Moving forward")
-                        AGC.runActionGroup('go_foward')
+                        run_action_async('go_foward')
                         time.sleep(0.2)
                     else:
                         print(f"🎯 STATION REACHED: {data}")
