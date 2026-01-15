@@ -230,7 +230,7 @@ def main():
                         cv2.putText(frame, "TURN RIGHT", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
                 else:
                     cv2.putText(frame, "Scanning for cardboard...", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
-                    print(f"[Main] Searching for cardboard but none detected. Model loaded: {vision.model is not None}\")"
+                    print(f"[Main] Searching for cardboard but none detected. Model loaded: {vision.model is not None}\")")
 
             elif current_state == STATE_ACTING:
                 cv2.putText(frame, f"TASK: {current_task}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
