@@ -472,16 +472,19 @@ class TonyPiRobotClient:
         }
 
     def get_system_info(self) -> Dict[str, Any]:
-        """Get system information from Raspberry Pi."""
+        """Get system information from Raspberry Pi (Task Manager metrics)."""
         try:
+            cpu_temp = self.get_cpu_temperature()
             return {
                 "platform": platform.platform(),
-                "cpu_percent": psutil.cpu_percent(interval=1),
+                "cpu_percent": psutil.cpu_percent(interval=0.1),
                 "memory_percent": psutil.virtual_memory().percent,
                 "disk_usage": psutil.disk_usage('/').percent,
-                "temperature": self.get_cpu_temperature(),
+                "temperature": cpu_temp,           # Legacy field
+                "cpu_temperature": cpu_temp,       # New field for frontend
                 "uptime": time.time() - psutil.boot_time(),
-                "hardware_mode": self.hardware_available
+                "hardware_mode": self.hardware_available,
+                "hardware_sdk": self.hardware_available
             }
         except Exception as e:
             logger.error(f"Error getting system info: {e}")
@@ -681,6 +684,10 @@ class TonyPiRobotClient:
             sensors = self.read_sensors()
             
             for sensor_name, value in sensors.items():
+                # Skip non-numeric values for certain sensors
+                if sensor_name == "light_status":
+                    continue  # This is a string, skip it
+                    
                 data = {
                     "robot_id": self.robot_id,
                     "sensor_type": sensor_name,
@@ -690,7 +697,7 @@ class TonyPiRobotClient:
                 }
                 self.client.publish(self.topics["sensors"], json.dumps(data))
             
-            logger.debug(f"Sent sensor data: {len(sensors)} sensors")
+            logger.debug(f"Sent {len(sensors)} sensor readings")
             
         except Exception as e:
             logger.error(f"Error sending sensor data: {e}")
@@ -758,26 +765,27 @@ class TonyPiRobotClient:
             logger.error(f"Error sending location: {e}")
 
     def send_status_update(self):
-        """Send robot status update."""
+        """Send robot status update with full Task Manager metrics."""
         if not self.is_connected:
             return
         
         try:
             ip_address = self.get_local_ip()
             camera_url = f"http://{ip_address}:8080/?action=stream"
+            system_info = self.get_system_info()
             
             data = {
                 "robot_id": self.robot_id,
                 "status": self.status,
                 "timestamp": datetime.now().isoformat(),
-                "system_info": self.get_system_info(),
+                "system_info": system_info,
                 "hardware_available": self.hardware_available,
                 "ip_address": ip_address,
                 "camera_url": camera_url
             }
             
             self.client.publish(self.topics["status"], json.dumps(data))
-            logger.debug(f"Sent status update: {self.status} (IP: {ip_address})")
+            logger.debug(f"Sent status: CPU={system_info.get('cpu_percent')}%, MEM={system_info.get('memory_percent')}%, TEMP={system_info.get('cpu_temperature')}°C")
             
         except Exception as e:
             logger.error(f"Error sending status: {e}")
@@ -885,34 +893,70 @@ class TonyPiRobotClient:
     async def run(self):
         """Main loop for the robot client."""
         self.running = True
-        logger.info(f"Starting TonyPi Robot Client - ID: {self.robot_id}")
-        logger.info(f"Hardware mode: {self.hardware_available}")
+        print("=" * 60)
+        print("   TONYPI ROBOT CLIENT - MONITORING TELEMETRY")
+        print("=" * 60)
+        print(f"   Robot ID: {self.robot_id}")
+        print(f"   MQTT Broker: {self.mqtt_broker}:{self.mqtt_port}")
+        print(f"   Hardware Mode: {self.hardware_available}")
+        print("=" * 60)
         
         try:
             await self.connect()
+            
+            # Send initial data immediately
+            print("\n📡 Sending initial telemetry...")
+            self.send_status_update()
+            self.send_battery_status()
+            self.send_sensor_data()
+            self.send_servo_data()
+            self.send_location_update()
+            self.send_log_message("INFO", "Robot client started and connected", "main")
+            print("✅ Initial telemetry sent!")
+            
+            print("\n" + "=" * 60)
+            print("✅ ROBOT CLIENT RUNNING - Sending telemetry data")
+            print("=" * 60)
+            print("Data being sent:")
+            print("  • Sensors:  every 2 seconds (IMU, temp, light, ultrasonic)")
+            print("  • Servos:   every 3 seconds (position, temp, voltage)")
+            print("  • Status:   every 10 seconds (CPU, memory, disk, uptime)")
+            print("  • Battery:  every 30 seconds")
+            print("  • Location: every 5 seconds")
+            print("  • Logs:     real-time")
+            print("=" * 60)
+            print("\nPress Ctrl+C to stop\n")
             
             last_sensor_time = 0
             last_servo_time = 0
             last_battery_time = 0
             last_location_time = 0
             last_status_time = 0
+            last_log_time = 0
+            cycle_count = 0
             
             while self.running:
                 current_time = time.time()
+                cycle_count += 1
                 
                 # Send sensor data every 2 seconds
                 if current_time - last_sensor_time >= 2:
                     self.send_sensor_data()
+                    sensors = self.sensors
+                    cpu_temp = sensors.get('cpu_temperature', 0)
+                    print(f"📊 Sensors: CPU={cpu_temp:.1f}°C, Accel=({sensors.get('accelerometer_x', 0):.2f}, {sensors.get('accelerometer_y', 0):.2f}, {sensors.get('accelerometer_z', 0):.2f})")
                     last_sensor_time = current_time
                 
                 # Send servo data every 3 seconds
                 if current_time - last_servo_time >= 3:
                     self.send_servo_data()
+                    print(f"🔧 Servos: {len(self.servo_data)} servos sent")
                     last_servo_time = current_time
                 
                 # Send battery status every 30 seconds
                 if current_time - last_battery_time >= 30:
                     self.send_battery_status()
+                    print(f"🔋 Battery: {self.battery_level:.1f}%")
                     last_battery_time = current_time
                 
                 # Send location every 5 seconds
@@ -920,10 +964,17 @@ class TonyPiRobotClient:
                     self.send_location_update()
                     last_location_time = current_time
                 
-                # Send status every 60 seconds
-                if current_time - last_status_time >= 60:
+                # Send status every 10 seconds (more frequent for Task Manager)
+                if current_time - last_status_time >= 10:
                     self.send_status_update()
+                    sys_info = self.get_system_info()
+                    print(f"💻 Status: CPU={sys_info.get('cpu_percent', 0):.1f}%, MEM={sys_info.get('memory_percent', 0):.1f}%, DISK={sys_info.get('disk_usage', 0):.1f}%, TEMP={sys_info.get('cpu_temperature', 0):.1f}°C")
                     last_status_time = current_time
+                
+                # Send periodic log message every 30 seconds
+                if current_time - last_log_time >= 30:
+                    self.send_log_message("INFO", f"Robot running normally. Cycle: {cycle_count}", "telemetry")
+                    last_log_time = current_time
                 
                 # Simulate battery drain (very slow)
                 if not self.hardware_available and self.battery_level > 0:
@@ -932,23 +983,53 @@ class TonyPiRobotClient:
                 await asyncio.sleep(0.1)
                 
         except KeyboardInterrupt:
-            logger.info("Received interrupt signal")
+            print("\n🛑 Stopping robot client...")
+            self.send_log_message("INFO", "Robot client stopped by user", "main")
         except Exception as e:
             logger.error(f"Error in main loop: {e}")
+            self.send_log_message("ERROR", f"Robot client error: {e}", "main")
         finally:
             await self.disconnect()
+            print("✅ Disconnected from monitoring system")
 
 
 def main():
     """Main entry point."""
     import argparse
     
-    parser = argparse.ArgumentParser(description="TonyPi Robot Client")
-    parser.add_argument("--broker", default="localhost", help="MQTT broker address")
-    parser.add_argument("--port", type=int, default=1883, help="MQTT broker port")
-    parser.add_argument("--robot-id", default=None, help="Robot ID (default: tonypi_<hostname>)")
+    # Get default broker from environment or use localhost
+    default_broker = os.getenv("MQTT_BROKER", "localhost")
+    default_port = int(os.getenv("MQTT_PORT", 1883))
+    default_robot_id = os.getenv("ROBOT_ID", None)
+    
+    parser = argparse.ArgumentParser(
+        description="TonyPi Robot Client - Sends telemetry to monitoring system",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python tonypi_client.py --broker 192.168.1.100
+  python tonypi_client.py --broker 192.168.1.100 --robot-id tonypi_test
+  
+Environment Variables:
+  MQTT_BROKER  - MQTT broker address (default: localhost)
+  MQTT_PORT    - MQTT broker port (default: 1883)
+  ROBOT_ID     - Robot identifier (default: tonypi_<hostname>)
+        """
+    )
+    parser.add_argument("--broker", default=default_broker, 
+                        help=f"MQTT broker address (default: {default_broker})")
+    parser.add_argument("--port", type=int, default=default_port, 
+                        help=f"MQTT broker port (default: {default_port})")
+    parser.add_argument("--robot-id", default=default_robot_id, 
+                        help="Robot ID (default: tonypi_<hostname>)")
     
     args = parser.parse_args()
+    
+    print("\n🤖 TonyPi Robot Client - Monitoring Telemetry")
+    print(f"   Connecting to MQTT broker: {args.broker}:{args.port}")
+    if args.robot_id:
+        print(f"   Robot ID: {args.robot_id}")
+    print()
     
     robot = TonyPiRobotClient(
         mqtt_broker=args.broker,
@@ -959,8 +1040,9 @@ def main():
     try:
         asyncio.run(robot.run())
     except KeyboardInterrupt:
-        logger.info("Robot client stopped by user")
+        print("\n👋 Robot client stopped by user")
     except Exception as e:
+        print(f"\n❌ Robot client error: {e}")
         logger.error(f"Robot client error: {e}")
 
 
