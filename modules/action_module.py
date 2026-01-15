@@ -42,7 +42,7 @@ class RobotActions:
     """Handles all robot action sequences"""
     
     def __init__(self):
-        # Hardware setup - only if available
+    # Hardware setup - only if available
         if HARDWARE_AVAILABLE:
             self.rrc_board = rrc.Board()
             self.Board = Controller.Controller(self.rrc_board)
