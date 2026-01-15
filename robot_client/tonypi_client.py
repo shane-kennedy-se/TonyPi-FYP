@@ -180,6 +180,7 @@ class TonyPiRobotClient:
         
         # Robot state
         self.battery_level = 100.0
+        self._last_battery_voltage = 12.6  # Store last read voltage for reporting
         self.location = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.sensors = {}
         self.status = "online"
@@ -475,9 +476,12 @@ class TonyPiRobotClient:
         """Get system information from Raspberry Pi (Task Manager metrics)."""
         try:
             cpu_temp = self.get_cpu_temperature()
+            # Use interval=None to get instant reading (non-blocking)
+            # This returns the CPU usage since last call
+            cpu_percent = psutil.cpu_percent(interval=None)
             return {
                 "platform": platform.platform(),
-                "cpu_percent": psutil.cpu_percent(interval=0.1),
+                "cpu_percent": cpu_percent,
                 "memory_percent": psutil.virtual_memory().percent,
                 "disk_usage": psutil.disk_usage('/').percent,
                 "temperature": cpu_temp,           # Legacy field
@@ -522,21 +526,80 @@ class TonyPiRobotClient:
     def get_battery_percentage(self) -> float:
         """
         Get battery percentage from hardware or simulation.
-        TonyPi battery: 10V = 0%, 12.6V = 100%
+        
+        TonyPi uses a 3S LiPo battery:
+        - Full charge: 12.6V (4.2V per cell)
+        - Nominal: 11.1V (3.7V per cell)
+        - Empty (safe cutoff): 9.0V (3.0V per cell)
+        
+        Uses a non-linear voltage curve for more accurate percentage:
+        - Above 11.4V: 70-100% (slow discharge region)
+        - 10.5V - 11.4V: 30-70% (nominal region)
+        - Below 10.5V: 0-30% (fast discharge region)
         """
         if self.hardware_available and board:
             try:
                 voltage_mv = board.get_battery()
                 if voltage_mv:
                     voltage_v = voltage_mv / 1000.0
-                    # Convert voltage to percentage (10V = 0%, 12.6V = 100%)
-                    percentage = ((voltage_v - 10.0) / 2.6) * 100
+                    percentage = self._voltage_to_percentage(voltage_v)
                     self.battery_level = max(0, min(100, percentage))
+                    self._last_battery_voltage = voltage_v  # Store for reporting
                     return self.battery_level
             except Exception as e:
                 logger.error(f"Error reading battery: {e}")
         
         return self.battery_level
+    
+    def _voltage_to_percentage(self, voltage: float) -> float:
+        """
+        Convert battery voltage to percentage using a realistic LiPo discharge curve.
+        
+        For 3S LiPo (9.0V - 12.6V range):
+        - Uses piecewise linear approximation of actual discharge curve
+        - More accurate than simple linear mapping
+        
+        Args:
+            voltage: Battery voltage in Volts
+            
+        Returns:
+            Battery percentage (0-100)
+        """
+        # Battery configuration for 3S LiPo
+        BATTERY_MIN_V = 9.0    # 3.0V per cell - empty
+        BATTERY_MAX_V = 12.6   # 4.2V per cell - full
+        
+        # Clamp voltage to valid range
+        voltage = max(BATTERY_MIN_V, min(BATTERY_MAX_V, voltage))
+        
+        # Piecewise linear approximation of LiPo discharge curve
+        # These breakpoints are based on typical 3S LiPo discharge characteristics
+        breakpoints = [
+            (9.0, 0),      # Empty
+            (9.6, 5),      # Critical low
+            (10.2, 15),    # Low
+            (10.5, 25),    # Start of nominal region
+            (10.8, 40),    
+            (11.1, 50),    # Nominal voltage
+            (11.4, 65),    
+            (11.7, 80),    # Good charge
+            (12.0, 90),    
+            (12.3, 95),    
+            (12.6, 100),   # Full
+        ]
+        
+        # Find the segment containing the voltage
+        for i in range(len(breakpoints) - 1):
+            v1, p1 = breakpoints[i]
+            v2, p2 = breakpoints[i + 1]
+            
+            if v1 <= voltage <= v2:
+                # Linear interpolation within segment
+                ratio = (voltage - v1) / (v2 - v1)
+                return p1 + ratio * (p2 - p1)
+        
+        # Fallback (shouldn't reach here due to clamping)
+        return 0 if voltage < BATTERY_MIN_V else 100
 
     def read_sensors(self) -> Dict[str, float]:
         """Read sensor data from hardware or simulation."""
@@ -732,22 +795,31 @@ class TonyPiRobotClient:
             logger.error(f"Error sending servo data: {e}")
 
     def send_battery_status(self):
-        """Send battery status."""
+        """Send battery status with actual voltage reading."""
         if not self.is_connected:
             return
         
         try:
             battery = self.get_battery_percentage()
+            
+            # Use actual voltage if available, otherwise estimate from percentage
+            if hasattr(self, '_last_battery_voltage'):
+                voltage = self._last_battery_voltage
+            else:
+                # Fallback: estimate voltage from percentage (for simulation mode)
+                # 3S LiPo: 9.0V (0%) to 12.6V (100%)
+                voltage = 9.0 + (battery / 100.0) * 3.6
+            
             data = {
                 "robot_id": self.robot_id,
-                "percentage": battery,
-                "voltage": 12.0 * (battery / 100.0),
+                "percentage": round(battery, 1),
+                "voltage": round(voltage, 2),
                 "charging": False,
                 "timestamp": datetime.now().isoformat()
             }
             
             self.client.publish(self.topics["battery"], json.dumps(data))
-            logger.debug(f"Sent battery status: {battery:.1f}%")
+            logger.debug(f"Sent battery status: {battery:.1f}% ({voltage:.2f}V)")
             
         except Exception as e:
             logger.error(f"Error sending battery status: {e}")
@@ -948,49 +1020,71 @@ class TonyPiRobotClient:
             cycle_count = 0
             
             while self.running:
-                current_time = time.time()
-                cycle_count += 1
-                
-                # Send sensor data every 2 seconds
-                if current_time - last_sensor_time >= 2:
-                    self.send_sensor_data()
-                    sensors = self.sensors
-                    cpu_temp = sensors.get('cpu_temperature', 0)
-                    print(f"📊 Sensors: CPU={cpu_temp:.1f}°C, Accel=({sensors.get('accelerometer_x', 0):.2f}, {sensors.get('accelerometer_y', 0):.2f}, {sensors.get('accelerometer_z', 0):.2f})")
-                    last_sensor_time = current_time
-                
-                # Send servo data every 3 seconds
-                if current_time - last_servo_time >= 3:
-                    self.send_servo_data()
-                    print(f"🔧 Servos: {len(self.servo_data)} servos sent")
-                    last_servo_time = current_time
-                
-                # Send battery status every 30 seconds
-                if current_time - last_battery_time >= 30:
-                    self.send_battery_status()
-                    print(f"🔋 Battery: {self.battery_level:.1f}%")
-                    last_battery_time = current_time
-                
-                # Send location every 5 seconds
-                if current_time - last_location_time >= 5:
-                    self.send_location_update()
-                    last_location_time = current_time
-                
-                # Send status every 10 seconds (more frequent for Task Manager)
-                if current_time - last_status_time >= 10:
-                    self.send_status_update()
-                    sys_info = self.get_system_info()
-                    print(f"💻 Status: CPU={sys_info.get('cpu_percent', 0):.1f}%, MEM={sys_info.get('memory_percent', 0):.1f}%, DISK={sys_info.get('disk_usage', 0):.1f}%, TEMP={sys_info.get('cpu_temperature', 0):.1f}°C")
-                    last_status_time = current_time
-                
-                # Send periodic log message every 30 seconds
-                if current_time - last_log_time >= 30:
-                    self.send_log_message("INFO", f"Robot running normally. Cycle: {cycle_count}", "telemetry")
-                    last_log_time = current_time
-                
-                # Simulate battery drain (very slow)
-                if not self.hardware_available and self.battery_level > 0:
-                    self.battery_level = max(0, self.battery_level - 0.001)
+                try:
+                    current_time = time.time()
+                    cycle_count += 1
+                    
+                    # Check MQTT connection status
+                    if not self.is_connected:
+                        print("⚠️  MQTT disconnected, attempting reconnect...")
+                        sys.stdout.flush()
+                        try:
+                            self.client.reconnect()
+                            await asyncio.sleep(2)
+                        except Exception as e:
+                            logger.error(f"Reconnect failed: {e}")
+                            await asyncio.sleep(5)
+                            continue
+                    
+                    # Send sensor data every 2 seconds
+                    if current_time - last_sensor_time >= 2:
+                        self.send_sensor_data()
+                        sensors = self.sensors
+                        cpu_temp = sensors.get('cpu_temperature', 0)
+                        print(f"📊 Sensors: CPU={cpu_temp:.1f}°C, Accel=({sensors.get('accelerometer_x', 0):.2f}, {sensors.get('accelerometer_y', 0):.2f}, {sensors.get('accelerometer_z', 0):.2f})")
+                        sys.stdout.flush()
+                        last_sensor_time = current_time
+                    
+                    # Send servo data every 3 seconds
+                    if current_time - last_servo_time >= 3:
+                        self.send_servo_data()
+                        print(f"🔧 Servos: {len(self.servo_data)} servos sent")
+                        sys.stdout.flush()
+                        last_servo_time = current_time
+                    
+                    # Send battery status every 30 seconds
+                    if current_time - last_battery_time >= 30:
+                        self.send_battery_status()
+                        print(f"🔋 Battery: {self.battery_level:.1f}%")
+                        sys.stdout.flush()
+                        last_battery_time = current_time
+                    
+                    # Send location every 5 seconds
+                    if current_time - last_location_time >= 5:
+                        self.send_location_update()
+                        last_location_time = current_time
+                    
+                    # Send status every 10 seconds (more frequent for Task Manager)
+                    if current_time - last_status_time >= 10:
+                        self.send_status_update()
+                        sys_info = self.get_system_info()
+                        print(f"💻 Status: CPU={sys_info.get('cpu_percent', 0):.1f}%, MEM={sys_info.get('memory_percent', 0):.1f}%, DISK={sys_info.get('disk_usage', 0):.1f}%, TEMP={sys_info.get('cpu_temperature', 0):.1f}°C")
+                        sys.stdout.flush()
+                        last_status_time = current_time
+                    
+                    # Send periodic log message every 30 seconds
+                    if current_time - last_log_time >= 30:
+                        self.send_log_message("INFO", f"Robot running normally. Cycle: {cycle_count}", "telemetry")
+                        last_log_time = current_time
+                    
+                    # Simulate battery drain (very slow)
+                    if not self.hardware_available and self.battery_level > 0:
+                        self.battery_level = max(0, self.battery_level - 0.001)
+                    
+                except Exception as loop_error:
+                    logger.error(f"Error in telemetry loop: {loop_error}")
+                    print(f"⚠️  Loop error: {loop_error}")
+                    sys.stdout.flush()
                 
                 await asyncio.sleep(0.1)
                 
