@@ -11,7 +11,8 @@ import hiwonder.Camera as Camera
 from modules import voice_module
 from modules import vision_module
 from modules import light_sensor
-from modules import ultrasonic_sensor  
+from modules import ultrasonic_sensor
+from modules import qr_navigate
 
 # --- CONFIGURATION ---
 FRAME_WIDTH = 640
@@ -20,7 +21,8 @@ FRAME_HEIGHT = 480
 # ROBOT STATES
 STATE_IDLE = "IDLE"           
 STATE_SEARCHING = "SEARCHING" 
-STATE_ACTING = "ACTING"       
+STATE_ACTING = "ACTING"
+STATE_NAVIGATE_QR = "NAVIGATE_QR"
 
 # THREADING SHARED VARS
 latest_frame = None
@@ -28,6 +30,7 @@ latest_result = None
 running = True
 frame_lock = threading.Lock()
 result_lock = threading.Lock()
+detected_station = None  # For QR navigation
 
 # ==========================================
 # 🧠 VISION THREAD
@@ -156,7 +159,7 @@ def main():
             # ==========================================
             # 🎤 VOICE COMMANDS
             # ==========================================
-            if current_state != STATE_ACTING:
+            if current_state != STATE_ACTING and current_state != STATE_NAVIGATE_QR:
                 cmd = voice.get_command()
                 if cmd:
                     print(f"🎤 Command: {cmd}")
@@ -170,21 +173,14 @@ def main():
                         current_state = STATE_IDLE
                         vision.reset()
                     
-                    # --- UPDATED COMMAND LIST HERE ---
+                    # --- TASK COMMANDS: Auto-scan QR first, then search for cardboard ---
                     elif cmd in ["Peeling", "Insert Label", "Flip", "Transport", "Pick Up Cardboard", "Transport Cardboard"]:
-                        # Final check before starting
                         if not sensor.is_dark():
-                            # ====================================================
-                            # 📝 LOGIC STEP 1: VOICE TRIGGER
-                            # ====================================================
-                            # We received a valid command (e.g., "Pick Up Cardboard").
-                            # 1. Store the command as 'current_task'.
-                            # 2. Switch state to SEARCHING.
-                            # 3. The robot will NOT act yet; it must find the box first.
                             current_task = cmd
-                            voice_module.speak(f"Starting {cmd}. Searching.")
-                            current_state = STATE_SEARCHING
-                            vision.reset()  # Clear old vision memory
+                            # FIRST: Scan QR to find station, THEN search for cardboard
+                            voice_module.speak(f"Scanning for station.")
+                            current_state = STATE_NAVIGATE_QR
+                            vision.reset()
                         else:
                             voice_module.speak("Cannot start. It is too dark.")
 
@@ -193,6 +189,29 @@ def main():
             # ==========================================
             if current_state == STATE_IDLE:
                 cv2.putText(frame, "IDLE", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+            elif current_state == STATE_NAVIGATE_QR:
+                cv2.putText(frame, "SCANNING FOR STATION QR...", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
+                cv2.putText(frame, "Press ESC to cancel", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 2)
+                
+                # Run QR navigation - robot scans and navigates to station
+                try:
+                    detected_station = qr_navigate.navigate_to_station()
+                    if detected_station:
+                        voice_module.speak(f"Reached station {detected_station}. Searching for cardboard.")
+                        # ====================================================
+                        # 📝 AUTO QR FLOW: After finding station, search for cardboard
+                        # ====================================================
+                        current_state = STATE_SEARCHING
+                    else:
+                        voice_module.speak("QR scan cancelled.")
+                        current_state = STATE_IDLE
+                        current_task = None
+                except Exception as e:
+                    print(f"[ERROR] QR Navigation failed: {e}")
+                    voice_module.speak("QR scan failed.")
+                    current_state = STATE_IDLE
+                    current_task = None
 
             elif current_state == STATE_SEARCHING:
                 current_det = None
