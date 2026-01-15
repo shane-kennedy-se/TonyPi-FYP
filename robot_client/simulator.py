@@ -802,7 +802,7 @@ class TonyPiSimulator:
         
         try:
             ip_address = self.get_local_ip()
-            camera_url = f"http://{ip_address}:8080/?action=stream"
+            camera_url = f"http://{ip_address}:8081/?action=stream"
             
             data = {
                 "robot_id": self.robot_id,
