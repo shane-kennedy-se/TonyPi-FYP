@@ -2,127 +2,153 @@ import cv2
 import hiwonder.ActionGroupControl as AGC
 from hiwonder import Controller, ros_robot_controller_sdk as rrc
 import time
+from pyzbar import pyzbar
 
 rrc_board = rrc.Board()
 Board = Controller.Controller(rrc_board)
 
-# Head servo IDs (adjust if needed)
-HEAD_PAN_SERVO = 8    # Left-Right rotation
-HEAD_TILT_SERVO = 7   # Up-Down tilt
+# Servo IDs
+HEAD_PAN_SERVO = 2
+HEAD_TILT_SERVO = 1
 
-def find_working_camera(max_index=3):
-    for i in range(max_index):
-        cap = cv2.VideoCapture(i)
-        if cap.isOpened():
-            cap.release()
-            print(f"[INFO] Using camera index {i}")
-            return i
-        cap.release()
-    return None
+qr_scanning = False
 
-def rotate_head_to_search(direction='left'):
-    """
-    Rotate head to search for QR code.
-    direction: 'left', 'right', or 'center'
-    """
+import threading
+
+def run_action_async(action_name):
+    t = threading.Thread(
+        target=AGC.runActionGroup,
+        args=(action_name,),
+        daemon=True
+    )
+    t.start()
+
+# ---------------- HEAD CONTROL ----------------
+def rotate_head(direction='left'):
     try:
         if direction == 'left':
-            Board.setPWMServoAngle(HEAD_PAN_SERVO, 120)  # Look left
-            print("👀 Head: Looking LEFT")
+            pan = 1200
+            tilt = 800
+            print("👀 LEFT")
+
         elif direction == 'right':
-            Board.setPWMServoAngle(HEAD_PAN_SERVO, 40)   # Look right
-            print("👀 Head: Looking RIGHT")
-        else:  # center
-            Board.setPWMServoAngle(HEAD_PAN_SERVO, 80)   # Center
-            print("👀 Head: CENTER")
-        time.sleep(0.3)
-    except Exception as e:
-        print(f"[WARNING] Head servo control failed: {e}")
+            pan = 400
+            tilt = 800
+            print("👀 RIGHT")
 
-def navigate_to_station():
-    """
-    Scan for QR code to find station.
-    Robot will:
-    1. Search by rotating head side-to-side
-    2. Align body to face QR
-    3. Walk forward to reach station
-    Returns: station name (e.g., "A", "B", "C") or None if not found
-    """
-    camera_index = find_working_camera()
-    if camera_index is None:
-        print("[ERROR] No camera found.")
-        return None
+        elif direction == 'up':
+            pan = 800
+            tilt = 500
+            print("👀 UP")
 
-    cap = cv2.VideoCapture(camera_index)
-    detector = cv2.QRCodeDetector()
-
-    print("[INFO] Scanning for station QR...")
-    frames_without_qr = 0
-    search_direction = 'left'
-    station_detected = None
-
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            continue
-
-        data, bbox, _ = detector.detectAndDecode(frame)
-
-        if data and bbox is not None:
-            print(f"✓ Detected QR: {data}")
-            frames_without_qr = 0
-            rotate_head_to_search('center')  # Center head when QR found
-
-            pts = bbox[0]
-            x_center = int((pts[0][0] + pts[2][0]) / 2)
-            qr_width = abs(pts[0][0] - pts[1][0])  # distance indicator
-            frame_center = frame.shape[1] // 2
-
-            # ---------- ALIGN BODY LEFT / RIGHT ----------
-            if x_center < frame_center - 60:
-                print("← Turning LEFT to align body")
-                AGC.runActionGroup('WalkOneStep')
-                time.sleep(0.3)
-
-            elif x_center > frame_center + 60:
-                print("→ Turning RIGHT to align body")
-                AGC.runActionGroup('WalkOneStep')
-                time.sleep(0.3)
-
-            # ---------- MOVE FORWARD TO STATION ----------
-            else:
-                if qr_width < 120:   # QR still far (< 120 pixels)
-                    print("→ Approaching station...")
-                    AGC.runActionGroup('WalkOneStep')
-                    time.sleep(0.2)
-                else:
-                    # QR is close enough - station reached!
-                    print(f"✓✓✓ STATION REACHED: {data}")
-                    station_detected = data
-                    break
+        elif direction == 'down':
+            pan = 800
+            tilt = 1100
+            print("👀 DOWN")
 
         else:
-            # No QR detected - search by rotating head
-            frames_without_qr += 1
-            if frames_without_qr % 15 == 0:  # Search every ~15 frames (~0.75 sec)
-                print(f"🔍 Searching... Head turning {search_direction}")
-                if search_direction == 'left':
-                    rotate_head_to_search('left')
-                    search_direction = 'right'
-                else:
-                    rotate_head_to_search('right')
-                    search_direction = 'left'
+            pan = 800
+            tilt = 800
+            print("👀 CENTER")
 
-        cv2.imshow("QR Navigation - Press ESC to exit", frame)
-        if cv2.waitKey(1) == 27:  # ESC key
-            print("[INFO] Navigation cancelled by user")
+        rrc_board.pwm_servo_set_position(
+            0.3,
+            [
+                [HEAD_PAN_SERVO, pan],
+                [HEAD_TILT_SERVO, tilt]
+            ]
+        )
+        time.sleep(0.3)
+
+    except Exception as e:
+        print(f"[WARNING] Head servo failed: {e}")
+
+# ---------------- QR NAVIGATION ----------------
+def navigate_to_station(frame_getter, timeout=60):
+
+    global qr_scanning
+
+    print("[INFO] Starting QR scan...")
+    qr_scanning = True
+    frames_without_qr = 0
+    station_detected = None
+    start_time = time.time()
+
+    # Scan pattern
+    scan_pattern = ['left', 'right', 'up', 'down']
+    scan_index = 0
+
+    while qr_scanning:
+
+        # Timeout
+        if time.time() - start_time > timeout:
+            print("[INFO] Timeout")
             break
+
+        frame = frame_getter()
+        if frame is None:
+            time.sleep(0.05)
+            continue
+
+        barcodes = pyzbar.decode(frame)
+
+        # -------- QR FOUND --------
+        if barcodes:
+            for barcode in barcodes:
+
+                data = barcode.data.decode("utf-8")
+                print(f"✓ QR Detected: {data}")
+
+                rotate_head('center')
+
+                (x, y, w, h) = barcode.rect
+                x_center = x + w // 2
+                qr_width = w
+                frame_center = frame.shape[1] // 2
+
+                # ------ ALIGN BODY ------
+                if x_center < frame_center - 60:
+                    print("↩ Turning LEFT")
+                    run_action_async('turn_left')
+
+                elif x_center > frame_center + 60:
+                    print("↪ Turning RIGHT")
+                    run_action_async('turn_right')
+
+                # ------ MOVE FORWARD ------
+                else:
+                    if qr_width < 120:
+                        print("→ Moving forward")
+                        run_action_async('go_foward')
+                        time.sleep(0.2)
+                    else:
+                        print(f"🎯 STATION REACHED: {data}")
+                        station_detected = data
+                        qr_scanning = False
+                        break
+
+        # -------- SEARCH MODE --------
+        else:
+            frames_without_qr += 1
+
+            if frames_without_qr % 15 == 0:
+
+                direction = scan_pattern[scan_index]
+                print(f"🔍 Searching {direction}")
+
+                rotate_head(direction)
+
+                # Next direction
+                scan_index = (scan_index + 1) % len(scan_pattern)
 
         time.sleep(0.05)
 
-    cap.release()
-    cv2.destroyAllWindows()
-    return station_detected  # Return detected station (e.g., "A", "B", "C")
+    # Reset head
+    print("🔄 Resetting head to CENTER")
+    rotate_head('center')
+
+    print(f"[INFO] Scan complete → {station_detected}")
+    return station_detected
 
 if __name__ == "__main__":
-    navigate_to_station()
+    print("Use navigate_to_station(frame_getter) from main.py")

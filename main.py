@@ -194,14 +194,19 @@ def main():
                 cv2.putText(frame, "SCANNING FOR STATION QR...", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
                 cv2.putText(frame, "Press ESC to cancel", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 2)
                 
-                # Run QR navigation - pass function that returns current frame
-                try:
-                    # Create frame getter that accesses latest frame safely
-                    def get_current_frame():
-                        with frame_lock:
-                            return latest_frame.copy() if latest_frame is not None else None
-                    
-                    detected_station = qr_navigate.navigate_to_station(get_current_frame, timeout=60)
+                # Start QR navigation in background thread (only once)
+                if not qr_navigate.navigation_active:
+                    with frame_lock:
+                        qr_navigate.current_frame_shared = latest_frame.copy() if latest_frame is not None else None
+                    qr_navigate.start_qr_navigation_async(timeout=60, use_360_scan=True)
+                
+                # Update shared frame for navigation thread
+                with frame_lock:
+                    qr_navigate.current_frame_shared = latest_frame.copy() if latest_frame is not None else None
+                
+                # Check if navigation completed
+                if not qr_navigate.navigation_active:
+                    detected_station = qr_navigate.get_navigation_result()
                     if detected_station:
                         voice_module.speak(f"Reached station {detected_station}. Searching for cardboard.")
                         # ====================================================
@@ -209,14 +214,9 @@ def main():
                         # ====================================================
                         current_state = STATE_SEARCHING
                     else:
-                        voice_module.speak("QR scan cancelled.")
+                        voice_module.speak("QR scan cancelled or timeout.")
                         current_state = STATE_IDLE
                         current_task = None
-                except Exception as e:
-                    print(f"[ERROR] QR Navigation failed: {e}")
-                    voice_module.speak("QR scan failed.")
-                    current_state = STATE_IDLE
-                    current_task = None
 
             elif current_state == STATE_SEARCHING:
                 current_det = None
