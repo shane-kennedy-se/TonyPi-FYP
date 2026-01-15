@@ -10,15 +10,20 @@ Board = Controller.Controller(rrc_board)
 HEAD_PAN_SERVO = 8    # Left-Right rotation
 HEAD_TILT_SERVO = 7   # Up-Down tilt
 
-def find_working_camera(max_index=3):
-    for i in range(max_index):
-        cap = cv2.VideoCapture(i)
-        if cap.isOpened():
-            cap.release()
-            print(f"[INFO] Using camera index {i}")
-            return i
-        cap.release()
-    return None
+def open_tonypi_camera():
+    gst = (
+        "libcamerasrc ! "
+        "video/x-raw,width=640,height=480,framerate=30/1 ! "
+        "videoconvert ! appsink"
+    )
+    cap = cv2.VideoCapture(gst, cv2.CAP_GSTREAMER)
+    if cap.isOpened():
+        print("[INFO] TonyPi camera opened successfully")
+        return cap
+    else:
+        print("[ERROR] Cannot open TonyPi camera")
+        return None
+
 
 def rotate_head_to_search(direction='left'):
     """
@@ -48,12 +53,10 @@ def navigate_to_station():
     3. Walk forward to reach station
     Returns: station name (e.g., "A", "B", "C") or None if not found
     """
-    camera_index = find_working_camera()
-    if camera_index is None:
-        print("[ERROR] No camera found.")
+    cap = open_tonypi_camera()
+    if cap is None:
         return None
 
-    cap = cv2.VideoCapture(camera_index)
     detector = cv2.QRCodeDetector()
 
     print("[INFO] Scanning for station QR...")
