@@ -2,6 +2,8 @@ import cv2
 import hiwonder.ActionGroupControl as AGC
 from hiwonder import Controller, ros_robot_controller_sdk as rrc
 import time
+import threading
+from pyzbar import pyzbar  # Use pyzbar for more reliable QR detection
 
 rrc_board = rrc.Board()
 Board = Controller.Controller(rrc_board)
@@ -10,15 +12,8 @@ Board = Controller.Controller(rrc_board)
 HEAD_PAN_SERVO = 8    # Left-Right rotation
 HEAD_TILT_SERVO = 7   # Up-Down tilt
 
-def find_working_camera(max_index=3):
-    for i in range(max_index):
-        cap = cv2.VideoCapture(i)
-        if cap.isOpened():
-            cap.release()
-            print(f"[INFO] Using camera index {i}")
-            return i
-        cap.release()
-    return None
+# QR Detection variables
+qr_scanning = False
 
 def rotate_head_to_search(direction='left'):
     """
@@ -39,67 +34,76 @@ def rotate_head_to_search(direction='left'):
     except Exception as e:
         print(f"[WARNING] Head servo control failed: {e}")
 
-def navigate_to_station():
+def navigate_to_station(frame_getter, timeout=60):
     """
-    Scan for QR code to find station.
-    Robot will:
-    1. Search by rotating head side-to-side
-    2. Align body to face QR
-    3. Walk forward to reach station
+    Scan for QR code to find station using live frames from camera.
+    Uses pyzbar for more reliable QR detection.
+    
+    Args:
+        frame_getter: Function that returns current frame (e.g., lambda: latest_frame)
+        timeout: Maximum time to scan for QR (seconds)
+    
     Returns: station name (e.g., "A", "B", "C") or None if not found
     """
-    camera_index = find_working_camera()
-    if camera_index is None:
-        print("[ERROR] No camera found.")
-        return None
-
-    cap = cv2.VideoCapture(camera_index)
-    detector = cv2.QRCodeDetector()
-
-    print("[INFO] Scanning for station QR...")
+    global qr_scanning
+    
+    print("[INFO] Starting QR scan for station...")
+    qr_scanning = True
     frames_without_qr = 0
     search_direction = 'left'
     station_detected = None
+    start_time = time.time()
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
+    while qr_scanning:
+        # Timeout check
+        if time.time() - start_time > timeout:
+            print("[INFO] QR scan timeout")
+            break
+            
+        # Get current frame from camera (already being captured by main.py)
+        frame = frame_getter()
+        if frame is None:
+            time.sleep(0.05)
             continue
 
-        data, bbox, _ = detector.detectAndDecode(frame)
+        # Use pyzbar to detect QR codes
+        barcodes = pyzbar.decode(frame)
+        
+        if barcodes:
+            for barcode in barcodes:
+                data = barcode.data.decode("utf-8")
+                print(f"✓ Detected QR: {data}")
+                frames_without_qr = 0
+                rotate_head_to_search('center')  # Center head when QR found
 
-        if data and bbox is not None:
-            print(f"✓ Detected QR: {data}")
-            frames_without_qr = 0
-            rotate_head_to_search('center')  # Center head when QR found
+                # Get bounding box
+                (x, y, w, h) = barcode.rect
+                x_center = x + w // 2
+                qr_width = w  # width of QR code
+                frame_center = frame.shape[1] // 2
 
-            pts = bbox[0]
-            x_center = int((pts[0][0] + pts[2][0]) / 2)
-            qr_width = abs(pts[0][0] - pts[1][0])  # distance indicator
-            frame_center = frame.shape[1] // 2
-
-            # ---------- ALIGN BODY LEFT / RIGHT ----------
-            if x_center < frame_center - 60:
-                print("← Turning LEFT to align body")
-                AGC.runActionGroup('WalkOneStep')
-                time.sleep(0.3)
-
-            elif x_center > frame_center + 60:
-                print("→ Turning RIGHT to align body")
-                AGC.runActionGroup('WalkOneStep')
-                time.sleep(0.3)
-
-            # ---------- MOVE FORWARD TO STATION ----------
-            else:
-                if qr_width < 120:   # QR still far (< 120 pixels)
-                    print("→ Approaching station...")
+                # ---------- ALIGN BODY LEFT / RIGHT ----------
+                if x_center < frame_center - 60:
+                    print("← Turning LEFT to align body")
                     AGC.runActionGroup('WalkOneStep')
-                    time.sleep(0.2)
+                    time.sleep(0.3)
+
+                elif x_center > frame_center + 60:
+                    print("→ Turning RIGHT to align body")
+                    AGC.runActionGroup('WalkOneStep')
+                    time.sleep(0.3)
+
+                # ---------- MOVE FORWARD TO STATION ----------
                 else:
-                    # QR is close enough - station reached!
-                    print(f"✓✓✓ STATION REACHED: {data}")
-                    station_detected = data
-                    break
+                    if qr_width < 120:   # QR still far (< 120 pixels)
+                        print("→ Approaching station...")
+                        AGC.runActionGroup('WalkOneStep')
+                        time.sleep(0.2)
+                    else:
+                        # QR is close enough - station reached!
+                        print(f"✓✓✓ STATION REACHED: {data}")
+                        station_detected = data
+                        break
 
         else:
             # No QR detected - search by rotating head
@@ -113,16 +117,11 @@ def navigate_to_station():
                     rotate_head_to_search('right')
                     search_direction = 'left'
 
-        cv2.imshow("QR Navigation - Press ESC to exit", frame)
-        if cv2.waitKey(1) == 27:  # ESC key
-            print("[INFO] Navigation cancelled by user")
-            break
-
         time.sleep(0.05)
 
-    cap.release()
-    cv2.destroyAllWindows()
+    qr_scanning = False
+    print(f"[INFO] QR scan complete. Station: {station_detected}")
     return station_detected  # Return detected station (e.g., "A", "B", "C")
 
 if __name__ == "__main__":
-    navigate_to_station()
+    print("QR Navigate module - use navigate_to_station(frame_getter) from main.py")

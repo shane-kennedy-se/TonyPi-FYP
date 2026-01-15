@@ -194,9 +194,14 @@ def main():
                 cv2.putText(frame, "SCANNING FOR STATION QR...", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
                 cv2.putText(frame, "Press ESC to cancel", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 2)
                 
-                # Run QR navigation - robot scans and navigates to station
+                # Run QR navigation - pass function that returns current frame
                 try:
-                    detected_station = qr_navigate.navigate_to_station()
+                    # Create frame getter that accesses latest frame safely
+                    def get_current_frame():
+                        with frame_lock:
+                            return latest_frame.copy() if latest_frame is not None else None
+                    
+                    detected_station = qr_navigate.navigate_to_station(get_current_frame, timeout=60)
                     if detected_station:
                         voice_module.speak(f"Reached station {detected_station}. Searching for cardboard.")
                         # ====================================================
