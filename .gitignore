@@ -1,3 +1,6 @@
+piper_models/
+piper_venv/
+*.onnx
 .env
 __pycache__/
 *.pyc
