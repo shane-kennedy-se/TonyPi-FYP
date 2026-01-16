@@ -10,12 +10,10 @@ import queue
 rrc_board = rrc.Board()
 ctl = Controller.Controller(rrc_board)
 
-# Servo IDs
 HEAD_PAN_SERVO = 2
 HEAD_TILT_SERVO = 1
 
-# Configuration Constants (TonyPi Pro Standard)
-# Adjust PAN_CENTER to 500 if 800 is not your robot's straight-ahead position
+# Configuration Constants
 PAN_CENTER = 1450  
 TILT_CENTER = 1450
 SERVO_PAN_MIN = 1000
@@ -23,17 +21,17 @@ SERVO_PAN_MAX = 1900
 SERVO_TILT_MIN = 1050
 SERVO_TILT_MAX = 1500
 
-# Thread-safe communication
+# Communication & State
 scan_result_queue = queue.Queue()
 current_frame_shared = None
 navigation_active = False
 qr_scanning = False
 
-# Global Tracking States
 object_center_x = -1
 object_width = 0
+lost_frames = 0  # Counter to prevent losing lock during walking shakes
+MAX_LOST_FRAMES = 15 # Roughly 0.5 - 1.0 second of "memory"
 
-# Head Scanning State
 head_turn = 'left_right'
 x_dis = PAN_CENTER
 y_dis = TILT_CENTER
@@ -44,59 +42,54 @@ scan_time_last = 0
 # ============ HELPER FUNCTIONS ============
 
 def run_action_async(action_name):
-    """Runs action group in background so vision doesn't freeze."""
     t = threading.Thread(target=AGC.runActionGroup, args=(action_name,), daemon=True)
     t.start()
 
-# ============ MOVEMENT THREAD (The "Transport.py" Logic) ============
+# ============ MOVEMENT THREAD ============
 
 def move():
-    global object_center_x, object_width, x_dis, y_dis, head_turn, d_x, d_y, qr_scanning
+    global object_center_x, object_width, x_dis, y_dis, head_turn, d_x, d_y, qr_scanning, lost_frames
     
     while True:
         if qr_scanning:
-            # --- CASE 1: TARGET FOUND (Alignment & Walking) ---
-            if object_center_x >= 0:
-                # 1. TONYPI SECRET: If head is looking left/right, turn body to align first
-                # This fixes the "head not centered" problem
-                if abs(x_dis - PAN_CENTER) > 100:
+            # --- CASE 1: TARGET LOCKED ---
+            # We move if we see it OR if we recently saw it (lost_frames < threshold)
+            if object_center_x >= 0 or (lost_frames < MAX_LOST_FRAMES and lost_frames > 0):
+                
+                # 1. Align Head/Body
+                if abs(x_dis - PAN_CENTER) > 80:
                     if x_dis > PAN_CENTER:
-                        print("↪ Head is looking right. Turning body right.")
                         AGC.runActionGroup('turn_right')
                     else:
-                        print("↩ Head is looking left. Turning body left.")
                         AGC.runActionGroup('turn_left')
                     
-                    # Gradually bring head back to center while body turns
-                    x_dis = PAN_CENTER
-                    y_dis = TILT_CENTER
-                    ctl.set_pwm_servo_pulse(HEAD_TILT_SERVO, y_dis, 200)
-                    ctl.set_pwm_servo_pulse(HEAD_PAN_SERVO, x_dis, 200)
-                    time.sleep(0.5)
-
-                # 2. Align body based on image center pixels
-                elif object_center_x < 260: # Frame center is ~320
+                    # Align head to center immediately
+                    x_dis, y_dis = PAN_CENTER, TILT_CENTER
+                    ctl.set_pwm_servo_pulse(HEAD_TILT_SERVO, y_dis, 100)
+                    ctl.set_pwm_servo_pulse(HEAD_PAN_SERVO, x_dis, 100)
+                
+                # 2. Fine-tune Body Alignment based on pixel position
+                elif object_center_x < 240 and object_center_x != -1:
                     run_action_async('turn_left')
-                elif object_center_x > 380:
+                elif object_center_x > 400 and object_center_x != -1:
                     run_action_async('turn_right')
                 
-                # 3. If aligned, move forward
+                # 3. Walk Forward
                 else:
-                    if object_width < 130:
-                        print("→ Moving forward to station")
+                    if object_width < 145 and object_width != 0:
                         run_action_async('go_forward')
-                    else:
+                    elif object_width >= 145:
                         print("🎯 STATION REACHED")
-                        qr_scanning = False # Stop loop
-                        
-            # --- CASE 2: SEARCHING (Zig-Zag Head Scan) ---
+                        qr_scanning = False 
+
+            # --- CASE 2: SEARCHING ---
             elif object_center_x == -1:
                 current_time = time.time()
                 if current_time - scan_time_last > 0.03:
                     if head_turn == 'left_right':
                         x_dis += d_x
                         if x_dis >= SERVO_PAN_MAX or x_dis <= SERVO_PAN_MIN:
-                            d_x = -d_x # Reverse direction
+                            d_x = -d_x
                             head_turn = 'up_down'
                     elif head_turn == 'up_down':
                         y_dis += d_y
@@ -106,10 +99,11 @@ def move():
                     
                     ctl.set_pwm_servo_pulse(HEAD_TILT_SERVO, y_dis, 20)
                     ctl.set_pwm_servo_pulse(HEAD_PAN_SERVO, x_dis, 20)
+                    scan_time_last = current_time
                 
         time.sleep(0.02)
 
-# Start movement thread immediately
+# Start thread
 th = threading.Thread(target=move)
 th.daemon = True
 th.start()
@@ -117,9 +111,9 @@ th.start()
 # ============ VISION PROCESS ============
 
 def navigate_to_station(frame_getter, timeout=60):
-    global qr_scanning, object_center_x, object_width
+    global qr_scanning, object_center_x, object_width, lost_frames
 
-    print("[INFO] Starting QR Station Navigation...")
+    print("[INFO] Locking QR Station...")
     qr_scanning = True
     start_time = time.time()
     station_data = None
@@ -131,18 +125,23 @@ def navigate_to_station(frame_getter, timeout=60):
         frame = frame_getter()
         if frame is None: continue
         
-        # QR Detection
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         barcodes = pyzbar.decode(frame_rgb)
 
         if barcodes:
+            # RESET lost frames as soon as we see it
+            lost_frames = 0
             barcode = barcodes[0]
             station_data = barcode.data.decode("utf-8")
             (x, y, w, h) = barcode.rect
             object_center_x = x + (w // 2)
             object_width = w
         else:
-            object_center_x = -1 # Not seen, trigger search logic in move()
+            # Increment lost frames instead of immediately going to -1
+            lost_frames += 1
+            if lost_frames >= MAX_LOST_FRAMES:
+                object_center_x = -1
+                object_width = 0
 
         time.sleep(0.02)
 
