@@ -132,12 +132,19 @@ class LightSensor:
         if time_stable >= self.debounce_time:
             # State has been stable long enough - update the debounced state
             if self._stable_state != current_raw_dark:
+                old_state = self._stable_state
                 self._stable_state = current_raw_dark
-                # Only print when state actually changes
+                # Get raw GPIO value for logging
+                raw_gpio_value = self.get_raw_value()
+                # Print when state actually changes (with more detail)
                 if current_raw_dark:
-                    print(f"[Light Sensor] State changed to DARK (stable for {self.debounce_time}s)")
+                    print(f"[Light Sensor] ⚠️ LOW LIGHT DETECTED! (stable for {self.debounce_time:.1f}s)")
+                    print(f"  -> Raw GPIO pin {self.pin}: {raw_gpio_value} (HIGH = blocked/dark)")
+                    print(f"  -> Previous state: {'DARK' if old_state else 'BRIGHT'} → New state: DARK")
                 else:
-                    print(f"[Light Sensor] State changed to BRIGHT (stable for {self.debounce_time}s)")
+                    print(f"[Light Sensor] ✅ Light levels restored to normal (stable for {self.debounce_time:.1f}s)")
+                    print(f"  -> Raw GPIO pin {self.pin}: {raw_gpio_value} (LOW = bright)")
+                    print(f"  -> Previous state: {'DARK' if old_state else 'BRIGHT'} → New state: BRIGHT")
         
         return self._stable_state
     
@@ -229,6 +236,9 @@ class Camera:
         self.running = True
         self.th = threading.Thread(target=self.camera_task, daemon=True)
         self.th.start()
+        
+        # Give thread a moment to start
+        time.sleep(0.1)
 
     def camera_open(self):
         """Open the camera."""
@@ -506,8 +516,18 @@ def start_camera_server(port=8080, camera_device=-1, resolution=(640, 480),
     # Initialize camera
     print("\nInitializing camera...")
     camera = Camera(resolution=resolution, device=camera_device)
-    if not camera.camera_open():
+    camera_opened = camera.camera_open()
+    if not camera_opened:
         print("Warning: Camera failed to open, running with test pattern")
+    else:
+        print("✅ Camera opened successfully")
+        # Wait a moment for first frame
+        time.sleep(0.5)
+        ret, test_frame = camera.read()
+        if ret and test_frame is not None:
+            print(f"✅ Camera is capturing frames ({test_frame.shape[1]}x{test_frame.shape[0]})")
+        else:
+            print("⚠️ Camera opened but no frames yet - may need a moment to initialize")
     
     # Start HTTP server
     try:
