@@ -75,8 +75,35 @@ class LightSensor:
         if LIGHT_SENSOR_AVAILABLE:
             try:
                 GPIO.setwarnings(False)
-                GPIO.setmode(GPIO.BCM)
-                GPIO.setup(self.pin, GPIO.IN)
+                # Try to set mode, but handle if already set
+                try:
+                    GPIO.setmode(GPIO.BCM)
+                except RuntimeError:
+                    # GPIO mode already set - this is OK, continue
+                    pass
+                except Exception as e:
+                    print(f"Warning: GPIO mode issue (may already be initialized): {e}")
+                
+                # Try to setup pin, but handle if already configured
+                try:
+                    GPIO.setup(self.pin, GPIO.IN)
+                except RuntimeError as e:
+                    if "GPIO channel" in str(e) and "already in use" in str(e):
+                        print(f"Warning: GPIO pin {pin} already in use. Trying to use existing setup...")
+                        # Try to read it anyway - might work if already configured
+                        try:
+                            _ = GPIO.input(self.pin)
+                            self.initialized = True
+                            print(f"Light sensor using existing GPIO pin {pin} configuration")
+                        except:
+                            print(f"Failed to use existing GPIO pin {pin}: {e}")
+                            return
+                    else:
+                        raise
+                except Exception as e:
+                    print(f"Failed to setup GPIO pin {pin}: {e}")
+                    return
+                
                 self.initialized = True
                 print(f"Light sensor initialized on GPIO pin {pin}")
                 print(f"  -> Debounce time: {debounce_time}s (sensor must be stable this long)")
@@ -84,6 +111,8 @@ class LightSensor:
                     print(f"  -> Logic INVERTED (--invert-light-sensor flag)")
             except Exception as e:
                 print(f"Failed to initialize light sensor: {e}")
+                print(f"  -> Tip: If GPIO is busy, try: sudo systemctl stop [other-service]")
+                print(f"  -> Or use --disable-light-sensor to disable light sensor")
     
     def _read_raw_dark(self) -> bool:
         """Read raw sensor value and interpret as dark/not dark."""
@@ -244,23 +273,57 @@ class Camera:
         """Open the camera."""
         if self.simulation_mode:
             self.opened = True
+            print("Camera running in simulation mode (test pattern)")
             return True
             
         try:
-            self.cap = cv2.VideoCapture(self.device)
-            if self.cap.isOpened():
+            # Try to open camera - try device index first, then try common device paths
+            if self.device == -1:
+                # Auto-detect: try common device indices
+                for dev_idx in [0, 1, 2]:
+                    print(f"Trying to open camera device {dev_idx}...")
+                    self.cap = cv2.VideoCapture(dev_idx)
+                    if self.cap.isOpened():
+                        ret, test_frame = self.cap.read()
+                        if ret and test_frame is not None:
+                            self.device = dev_idx
+                            print(f"✅ Camera found on device {dev_idx}")
+                            break
+                        else:
+                            self.cap.release()
+                            self.cap = None
+                else:
+                    print("❌ No camera found on devices 0, 1, or 2")
+                    return False
+            else:
+                self.cap = cv2.VideoCapture(self.device)
+            
+            if self.cap is not None and self.cap.isOpened():
+                # Configure camera properties
                 self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('Y', 'U', 'Y', 'V'))
                 self.cap.set(cv2.CAP_PROP_FPS, 30)
                 self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
                 self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
-                self.opened = True
-                print(f"Camera opened: {self.width}x{self.height}")
-                return True
+                
+                # Test read to make sure it works
+                ret, test_frame = self.cap.read()
+                if ret and test_frame is not None:
+                    self.opened = True
+                    print(f"✅ Camera opened successfully: {self.width}x{self.height}")
+                    print(f"   Device: {self.device}, Test frame: {test_frame.shape}")
+                    return True
+                else:
+                    print("❌ Camera opened but cannot read frames")
+                    self.cap.release()
+                    self.cap = None
+                    return False
             else:
-                print("Failed to open camera")
+                print(f"❌ Failed to open camera device {self.device}")
                 return False
         except Exception as e:
-            print(f'Failed to open camera: {e}')
+            print(f'❌ Failed to open camera: {e}')
+            import traceback
+            traceback.print_exc()
             return False
 
     def camera_close(self):
@@ -316,7 +379,7 @@ class Camera:
                     
                 if self.opened and self.cap is not None and self.cap.isOpened():
                     ret, frame_tmp = self.cap.read()
-                    if ret:
+                    if ret and frame_tmp is not None:
                         frame = cv2.resize(frame_tmp, (self.width, self.height), 
                                           interpolation=cv2.INTER_NEAREST)
                         if self.flip:
@@ -326,19 +389,35 @@ class Camera:
                         frame = self._add_light_sensor_overlay(frame)
                         self.frame = frame
                     else:
-                        # Try to reopen camera
+                        # Frame read failed - try to reopen camera
+                        if self.frame is None:
+                            # Only log once when frame becomes None
+                            pass
                         self.frame = None
+                        # Try to reopen
+                        try:
+                            if self.cap is not None:
+                                self.cap.release()
+                            cap = cv2.VideoCapture(self.device)
+                            ret, _ = cap.read()
+                            if ret:
+                                self.cap = cap
+                                print(f"[Camera Thread] Reopened camera device {self.device}")
+                        except Exception as e:
+                            print(f"[Camera Thread] Error reopening camera: {e}")
+                elif self.opened:
+                    # Camera marked as opened but cap is None - try to open
+                    try:
                         cap = cv2.VideoCapture(self.device)
                         ret, _ = cap.read()
                         if ret:
                             self.cap = cap
-                elif self.opened:
-                    cap = cv2.VideoCapture(self.device)
-                    ret, _ = cap.read()
-                    if ret:
-                        self.cap = cap              
+                            print(f"[Camera Thread] Opened camera device {self.device}")
+                    except Exception as e:
+                        print(f"[Camera Thread] Error opening camera: {e}")
                 else:
-                    time.sleep(0.01)
+                    # Camera not opened yet - wait
+                    time.sleep(0.1)
             except Exception as e:
                 print(f'Camera capture error: {e}')
                 time.sleep(0.01)
@@ -518,16 +597,27 @@ def start_camera_server(port=8080, camera_device=-1, resolution=(640, 480),
     camera = Camera(resolution=resolution, device=camera_device)
     camera_opened = camera.camera_open()
     if not camera_opened:
-        print("Warning: Camera failed to open, running with test pattern")
+        print("⚠️ Warning: Camera failed to open, running with test pattern")
+        print("   -> Camera will show test pattern instead of live feed")
     else:
         print("✅ Camera opened successfully")
-        # Wait a moment for first frame
-        time.sleep(0.5)
-        ret, test_frame = camera.read()
-        if ret and test_frame is not None:
-            print(f"✅ Camera is capturing frames ({test_frame.shape[1]}x{test_frame.shape[0]})")
-        else:
-            print("⚠️ Camera opened but no frames yet - may need a moment to initialize")
+        # Wait for camera thread to start capturing
+        print("   Waiting for first frame...")
+        max_wait = 3.0  # Wait up to 3 seconds
+        waited = 0.0
+        frame_received = False
+        while waited < max_wait:
+            ret, test_frame = camera.read()
+            if ret and test_frame is not None:
+                print(f"✅ Camera is capturing frames ({test_frame.shape[1]}x{test_frame.shape[0]})")
+                frame_received = True
+                break
+            time.sleep(0.1)
+            waited += 0.1
+        
+        if not frame_received:
+            print("⚠️ Warning: Camera opened but no frames received yet")
+            print("   -> Stream may start working after a few moments")
     
     # Start HTTP server
     try:
@@ -564,11 +654,24 @@ def start_camera_server(port=8080, camera_device=-1, resolution=(640, 480),
         target_fps = 30
         frame_time = 1.0 / target_fps
         last_frame_time = time.time()
+        frame_count = 0
+        last_status_time = time.time()
         
+        print("\n📹 Starting camera frame loop...")
         while True:
             ret, frame = camera.read()
-            if ret:
+            if ret and frame is not None:
                 img_show = frame
+                frame_count += 1
+                # Print status every 5 seconds
+                if time.time() - last_status_time >= 5.0:
+                    print(f"📹 Camera streaming: {frame_count} frames captured, {img_show.shape[1]}x{img_show.shape[0]}")
+                    last_status_time = time.time()
+            else:
+                # No frame available - this is OK if camera just started
+                if frame_count == 0 and time.time() - last_status_time >= 2.0:
+                    print(f"⏳ Waiting for camera frames... (camera.opened={camera.opened}, simulation={camera.simulation_mode})")
+                    last_status_time = time.time()
             
             # Maintain consistent frame rate
             current_time = time.time()
