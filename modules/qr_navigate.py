@@ -16,12 +16,12 @@ HEAD_TILT_SERVO = 1
 
 # Configuration Constants (TonyPi Pro Standard)
 # Adjust PAN_CENTER to 500 if 800 is not your robot's straight-ahead position
-PAN_CENTER = 800  
-TILT_CENTER = 800
-SERVO_PAN_MIN = 400
-SERVO_PAN_MAX = 1200
-SERVO_TILT_MIN = 600
-SERVO_TILT_MAX = 1000
+PAN_CENTER = 1450  
+TILT_CENTER = 1450
+SERVO_PAN_MIN = 1000
+SERVO_PAN_MAX = 1900
+SERVO_TILT_MIN = 1050
+SERVO_TILT_MAX = 1500
 
 # Thread-safe communication
 scan_result_queue = queue.Queue()

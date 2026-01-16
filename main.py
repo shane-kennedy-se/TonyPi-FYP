@@ -198,7 +198,7 @@ def main():
                 if not qr_navigate.navigation_active:
                     with frame_lock:
                         qr_navigate.current_frame_shared = latest_frame.copy() if latest_frame is not None else None
-                    qr_navigate.start_qr_navigation_async(timeout=60, use_360_scan=True)
+                    qr_navigate.start_qr_navigation_async(timeout=60)
                 
                 # Update shared frame for navigation thread
                 with frame_lock:

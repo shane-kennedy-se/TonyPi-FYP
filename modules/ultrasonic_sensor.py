@@ -9,7 +9,7 @@ import time
 # ----------------------------
 TRIG_PIN = 28
 ECHO_PIN = 29
-OBSTACLE_DISTANCE_THRESHOLD = 25  # cm - obstacle detected if closer than this
+OBSTACLE_DISTANCE_THRESHOLD = 10  # cm - obstacle detected if closer than this
 DISTANCE_BUFFER_SIZE = 5  # Number of readings to average
 
 
