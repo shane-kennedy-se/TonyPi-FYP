@@ -515,8 +515,8 @@ def telemetry_worker():
                 send_location_update(robot_location["x"], robot_location["y"], robot_location["z"])
                 last_location_time = current_time
             
-            # Send status every 60 seconds
-            if current_time - last_status_time >= 60:
+            # Send status every 10 seconds (includes camera_url and ip_address)
+            if current_time - last_status_time >= 10:
                 send_status_update("online")
                 last_status_time = current_time
             
@@ -614,10 +614,18 @@ def main():
     print("\n" + "=" * 50)
     print("✅ SYSTEM READY - All monitoring active!")
     print("=" * 50)
-    print(f"📷 Camera Stream: http://{get_local_ip()}:{CAMERA_STREAM_PORT}/?action=stream")
+    local_ip = get_local_ip()
+    camera_url = f"http://{local_ip}:{CAMERA_STREAM_PORT}/?action=stream"
+    print(f"📷 Camera Stream: {camera_url}")
+    print(f"📡 Robot IP: {local_ip}")
     print("Press 'q' in the camera window to quit")
     print("=" * 50 + "\n")
     send_log("INFO", "System ready and operational", "main")
+    
+    # Send status again after everything is ready (ensures camera_url is sent)
+    time.sleep(1)  # Small delay to ensure MQTT is fully connected
+    send_status_update("online")
+    print(f"📡 Sent camera URL to monitoring system: {camera_url}")
 
     try:
         while True:
