@@ -46,11 +46,20 @@ class LightSensor:
     Falls back to simulation mode if GPIO is not available.
     """
     
-    def __init__(self, pin=24):
+    def __init__(self, pin=24, invert_logic=False):
+        """
+        Initialize light sensor.
+        
+        Args:
+            pin: GPIO pin number (BCM mode)
+            invert_logic: If True, inverts the dark detection logic.
+                         Use this if sensor always shows wrong state.
+        """
         self.pin = pin
         self.initialized = False
         self._last_dark_state = False
         self._state_change_time = 0
+        self.invert_logic = invert_logic
         
         if LIGHT_SENSOR_AVAILABLE:
             try:
@@ -59,18 +68,32 @@ class LightSensor:
                 GPIO.setup(self.pin, GPIO.IN)
                 self.initialized = True
                 print(f"Light sensor initialized on GPIO pin {pin}")
+                if invert_logic:
+                    print(f"  -> Logic INVERTED (--invert-light-sensor flag)")
             except Exception as e:
                 print(f"Failed to initialize light sensor: {e}")
     
     def is_dark(self) -> bool:
         """
         Returns True if sensor detects darkness (blocked/low light).
-        Same logic as FYP_Robot light_sensor.py
+        
+        NOTE: Light sensor modules vary in their output logic:
+        - Some LDR modules output HIGH (1) when dark, LOW (0) when bright
+        - Some output LOW (0) when dark, HIGH (1) when bright
+        
+        If your sensor always shows "low light" even when bright,
+        use the --invert-light-sensor flag or adjust the threshold
+        potentiometer on the sensor module.
         """
         if self.initialized and LIGHT_SENSOR_AVAILABLE:
             try:
-                # Returns True if Sensor is blocked (High signal)
-                return GPIO.input(self.pin) == 1
+                raw_value = GPIO.input(self.pin)
+                # Default: LOW (0) = dark, HIGH (1) = bright
+                # With invert_logic: HIGH (1) = dark, LOW (0) = bright  
+                if self.invert_logic:
+                    return raw_value == 1
+                else:
+                    return raw_value == 0
             except Exception as e:
                 print(f"Error reading light sensor: {e}")
                 return False
@@ -78,6 +101,26 @@ class LightSensor:
         # Simulation mode - randomly simulate light conditions
         # 5% chance of being dark (for testing purposes)
         return random.random() < 0.05
+    
+    def get_raw_value(self) -> int:
+        """
+        Get the raw GPIO value for debugging.
+        Returns 0 or 1, or -1 if not available.
+        """
+        if self.initialized and LIGHT_SENSOR_AVAILABLE:
+            try:
+                return GPIO.input(self.pin)
+            except:
+                return -1
+        return -1
+    
+    def debug_print(self):
+        """Print debug info about sensor state."""
+        raw = self.get_raw_value()
+        is_dark = self.is_dark()
+        print(f"[Light Sensor] GPIO Pin {self.pin}: raw={raw}, is_dark={is_dark}")
+        print(f"  -> If sensor always shows wrong state, edit is_dark() logic in camera_stream.py")
+        return raw, is_dark
     
     def cleanup(self):
         """Clean up GPIO resources."""
@@ -348,8 +391,10 @@ class MJPGHandler(BaseHTTPRequestHandler):
                         self.send_header('Content-length', len(jpg_bytes))
                         self.end_headers()
                         self.wfile.write(jpg_bytes)
-                    else:
-                        time.sleep(0.1)
+                    
+                    # CRITICAL: Add frame rate limiting for smooth streaming (~30fps)
+                    # Without this, the loop spins too fast causing lag and CPU spikes
+                    time.sleep(0.033)
                 except Exception as e:
                     print(f"Stream error: {e}")
                     break
@@ -361,7 +406,7 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     allow_reuse_address = True  # Allow reuse of address after server closes
 
 
-def start_camera_server(port=8080, camera_device=-1, resolution=(640, 480), light_sensor_pin=24):
+def start_camera_server(port=8080, camera_device=-1, resolution=(640, 480), light_sensor_pin=24, invert_light_sensor=False):
     """
     Start the MJPEG camera streaming server with light sensor integration.
     
@@ -370,6 +415,7 @@ def start_camera_server(port=8080, camera_device=-1, resolution=(640, 480), ligh
         camera_device: Camera device index (-1 for auto)
         resolution: Camera resolution tuple (width, height)
         light_sensor_pin: GPIO pin for light sensor (default: 24)
+        invert_light_sensor: If True, inverts the light sensor logic
     """
     global img_show, light_sensor
     
@@ -380,13 +426,20 @@ def start_camera_server(port=8080, camera_device=-1, resolution=(640, 480), ligh
     print(f"   Resolution: {resolution[0]}x{resolution[1]}")
     print(f"   OpenCV available: {CV2_AVAILABLE}")
     print(f"   Light sensor GPIO: {light_sensor_pin}")
+    print(f"   Light sensor inverted: {invert_light_sensor}")
     print("=" * 50)
     
     # Initialize light sensor (same as FYP_Robot)
     print("\nInitializing light sensor...")
-    light_sensor = LightSensor(pin=light_sensor_pin)
+    light_sensor = LightSensor(pin=light_sensor_pin, invert_logic=invert_light_sensor)
     if light_sensor.initialized:
         print(f"Light sensor initialized on GPIO pin {light_sensor_pin}")
+        # Debug print to help troubleshoot
+        print("\n--- Light Sensor Debug ---")
+        light_sensor.debug_print()
+        print("If the above is_dark value is wrong for current lighting,")
+        print("try running with --invert-light-sensor flag")
+        print("--------------------------\n")
     else:
         print("Light sensor running in simulation mode")
     
@@ -426,12 +479,24 @@ def start_camera_server(port=8080, camera_device=-1, resolution=(640, 480), ligh
     print("\nPress Ctrl+C to stop\n")
     
     # Main loop - update img_show with camera frames
+    # Using proper frame timing for smooth streaming
     try:
+        target_fps = 30
+        frame_time = 1.0 / target_fps
+        last_frame_time = time.time()
+        
         while True:
             ret, frame = camera.read()
             if ret:
                 img_show = frame
-            time.sleep(0.01)
+            
+            # Maintain consistent frame rate
+            current_time = time.time()
+            elapsed = current_time - last_frame_time
+            sleep_time = frame_time - elapsed
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+            last_frame_time = time.time()
     except KeyboardInterrupt:
         print("\nShutting down camera server...")
         camera.camera_close()
@@ -455,6 +520,12 @@ Light Sensor Integration:
   - Warning message in console
   
   This matches the behavior of the FYP_Robot main.py
+  
+Light Sensor Troubleshooting:
+  If the sensor always shows "LOW LIGHT" even when bright, try:
+  1. Use --invert-light-sensor flag to flip the detection logic
+  2. Adjust the threshold potentiometer on your sensor module
+  3. Check the GPIO pin connection
         """
     )
     parser.add_argument("--port", type=int, default=8081, help="HTTP server port (default: 8081)")
@@ -462,6 +533,8 @@ Light Sensor Integration:
     parser.add_argument("--width", type=int, default=640, help="Frame width (default: 640)")
     parser.add_argument("--height", type=int, default=480, help="Frame height (default: 480)")
     parser.add_argument("--light-sensor-pin", type=int, default=24, help="GPIO pin for light sensor (default: 24)")
+    parser.add_argument("--invert-light-sensor", action="store_true", 
+                       help="Invert light sensor logic (use if sensor always shows wrong state)")
     
     args = parser.parse_args()
     
@@ -469,7 +542,8 @@ Light Sensor Integration:
         port=args.port,
         camera_device=args.device,
         resolution=(args.width, args.height),
-        light_sensor_pin=args.light_sensor_pin
+        light_sensor_pin=args.light_sensor_pin,
+        invert_light_sensor=args.invert_light_sensor
     )
 
 
