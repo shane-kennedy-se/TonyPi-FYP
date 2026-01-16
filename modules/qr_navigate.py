@@ -44,46 +44,6 @@ def run_action_async(action_name):
     )
     t.start()
 
-# ---------------- HEAD CONTROL ----------------
-def rotate_head(direction='left'):
-    try:
-        if direction == 'left':
-            pan = 1200
-            tilt = 800
-            print("👀 LEFT")
-
-        elif direction == 'right':
-            pan = 400
-            tilt = 800
-            print("👀 RIGHT")
-
-        elif direction == 'up':
-            pan = 800
-            tilt = 500
-            print("👀 UP")
-
-        elif direction == 'down':
-            pan = 800
-            tilt = 1100
-            print("👀 DOWN")
-
-        else:
-            pan = 800
-            tilt = 800
-            print("👀 CENTER")
-
-        rrc_board.pwm_servo_set_position(
-            0.3,
-            [
-                [HEAD_PAN_SERVO, pan],
-                [HEAD_TILT_SERVO, tilt]
-            ]
-        )
-        time.sleep(0.3)
-
-    except Exception as e:
-        print(f"[WARNING] Head servo failed: {e}")
-
 # 360-DEGREE CONTINUOUS HEAD SCAN
 def scan_360_head():
     """
@@ -108,6 +68,7 @@ def scan_360_head():
             if x_dis >= SERVO_PAN_MAX or x_dis <= SERVO_PAN_MIN:
                 head_turn = 'up_down'
                 d_x = -d_x
+                print(f"[SERVO] Switching to UP_DOWN scan")
         
         elif head_turn == 'up_down':
             y_dis += d_y
@@ -115,6 +76,7 @@ def scan_360_head():
             if y_dis >= SERVO_TILT_MAX or y_dis <= SERVO_TILT_MIN:
                 head_turn = 'left_right'
                 d_y = -d_y
+                print(f"[SERVO] Switching to LEFT_RIGHT scan")
         
         # Apply servo positions
         rrc_board.pwm_servo_set_position(
@@ -139,12 +101,12 @@ def reset_head_scan():
 
 def navigate_to_station(frame_getter, timeout=60, use_360_scan=False):
     """
-    Navigate to QR station.
+    Navigate to QR station using continuous 360° head scan.
     
     Args:
         frame_getter: Function that returns current camera frame
         timeout: Maximum scan time in seconds
-        use_360_scan: If True, use continuous 360° head scan; if False, use discrete positions
+        use_360_scan: Legacy parameter (only 360° scan is supported now)
     
     Returns:
         Detected station data or None
@@ -158,14 +120,9 @@ def navigate_to_station(frame_getter, timeout=60, use_360_scan=False):
     station_detected = None
     start_time = time.time()
 
-    # Setup scanning mode
-    if use_360_scan:
-        reset_head_scan()
-        print("[INFO] Using 360° continuous head scan")
-    else:
-        scan_pattern = ['left', 'right', 'up', 'down']
-        scan_index = 0
-        print("[INFO] Using discrete head positions")
+    # Setup 360 continuous scanning
+    reset_head_scan()
+    print("[INFO] Starting 360° continuous head scan")
 
     while qr_scanning:
 
@@ -179,7 +136,15 @@ def navigate_to_station(frame_getter, timeout=60, use_360_scan=False):
             time.sleep(0.05)
             continue
 
-        barcodes = pyzbar.decode(frame)
+        # Validate frame
+        if frame.size == 0 or frame.shape[0] == 0 or frame.shape[1] == 0:
+            time.sleep(0.05)
+            continue
+        
+        # Convert BGR to RGB for pyzbar (pyzbar expects RGB)
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        
+        barcodes = pyzbar.decode(frame_rgb)
 
         # -------- QR FOUND --------
         if barcodes:
@@ -188,7 +153,12 @@ def navigate_to_station(frame_getter, timeout=60, use_360_scan=False):
                 data = barcode.data.decode("utf-8")
                 print(f"✓ QR Detected: {data}")
 
-                rotate_head('center')
+                # Center head servos
+                rrc_board.pwm_servo_set_position(
+                    0.3,
+                    [[HEAD_PAN_SERVO, 800], [HEAD_TILT_SERVO, 800]]
+                )
+                time.sleep(0.3)
 
                 (x, y, w, h) = barcode.rect
                 x_center = x + w // 2
@@ -219,29 +189,22 @@ def navigate_to_station(frame_getter, timeout=60, use_360_scan=False):
         # -------- SEARCH MODE --------
         else:
             frames_without_qr += 1
-
-            if use_360_scan:
-                # Use continuous 360-degree scan
-                scan_360_head()
-            else:
-                # Use discrete positions
-                if frames_without_qr % 15 == 0:
-
-                    direction = scan_pattern[scan_index]
-                    print(f"🔍 Searching {direction}")
-
-                    rotate_head(direction)
-
-                    # Next direction
-                    scan_index = (scan_index + 1) % len(scan_pattern)
+            # Use continuous 360-degree scan (every frame)
+            scan_360_head()
+            # Print progress every 50 frames
+            if frames_without_qr % 50 == 0:
+                print(f"[360-SCAN] Scanning (mode: {head_turn})... Frames: {frames_without_qr}")
 
         time.sleep(0.05)
 
     # Reset head
-    print("🔄 Resetting head to CENTER")
-    rotate_head('center')
-    if use_360_scan:
-        reset_head_scan()
+    print("[INFO] Resetting head to CENTER")
+    rrc_board.pwm_servo_set_position(
+        0.3,
+        [[HEAD_PAN_SERVO, 800], [HEAD_TILT_SERVO, 800]]
+    )
+    time.sleep(0.3)
+    reset_head_scan()
 
     print(f"[INFO] Scan complete → {station_detected}")
     return station_detected
@@ -257,16 +220,23 @@ def _navigate_background_worker(timeout=60, use_360_scan=False):
     global qr_scanning, current_frame_shared, navigation_active
 
     def get_current_frame():
-        return current_frame_shared
+        if current_frame_shared is None:
+            return None
+        return current_frame_shared.copy()
 
     try:
+        print(f"[DEBUG] Navigation worker started with use_360_scan={use_360_scan}")
         result = navigate_to_station(get_current_frame, timeout=timeout, use_360_scan=use_360_scan)
+        print(f"[DEBUG] Navigation result: {result}")
         scan_result_queue.put(result)
     except Exception as e:
         print(f"[ERROR] Navigation thread error: {e}")
+        import traceback
+        traceback.print_exc()
         scan_result_queue.put(None)
     finally:
         navigation_active = False
+        print("[DEBUG] Navigation worker ended")
 
 
 def start_qr_navigation_async(timeout=60, use_360_scan=True):
