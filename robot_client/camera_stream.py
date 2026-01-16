@@ -38,28 +38,39 @@ except ImportError:
     print("Warning: RPi.GPIO not available - light sensor will be simulated")
 
 # ==========================================
-# LIGHT SENSOR CLASS (same as FYP_Robot)
+# LIGHT SENSOR CLASS (with debouncing)
 # ==========================================
 class LightSensor:
     """
     Light sensor class for reading ambient light via GPIO.
+    Includes debouncing to prevent rapid state flickering.
     Falls back to simulation mode if GPIO is not available.
     """
     
-    def __init__(self, pin=24, invert_logic=False):
+    def __init__(self, pin=24, invert_logic=False, disabled=False, debounce_time=1.0):
         """
         Initialize light sensor.
         
         Args:
             pin: GPIO pin number (BCM mode)
             invert_logic: If True, inverts the dark detection logic.
-                         Use this if sensor always shows wrong state.
+            disabled: If True, sensor always returns "not dark" (light OK)
+            debounce_time: Seconds the sensor must be stable before state changes (default 1.0s)
         """
         self.pin = pin
         self.initialized = False
-        self._last_dark_state = False
-        self._state_change_time = 0
         self.invert_logic = invert_logic
+        self.disabled = disabled
+        self.debounce_time = debounce_time
+        
+        # Debouncing state
+        self._stable_state = False  # The debounced/stable "is dark" state
+        self._last_raw_dark = False  # Last raw reading
+        self._state_stable_since = time.time()  # When current raw state started
+        
+        if disabled:
+            print(f"Light sensor DISABLED (--disable-light-sensor flag)")
+            return
         
         if LIGHT_SENSOR_AVAILABLE:
             try:
@@ -68,23 +79,14 @@ class LightSensor:
                 GPIO.setup(self.pin, GPIO.IN)
                 self.initialized = True
                 print(f"Light sensor initialized on GPIO pin {pin}")
+                print(f"  -> Debounce time: {debounce_time}s (sensor must be stable this long)")
                 if invert_logic:
                     print(f"  -> Logic INVERTED (--invert-light-sensor flag)")
             except Exception as e:
                 print(f"Failed to initialize light sensor: {e}")
     
-    def is_dark(self) -> bool:
-        """
-        Returns True if sensor detects darkness (blocked/low light).
-        
-        NOTE: Light sensor modules vary in their output logic:
-        - Some LDR modules output HIGH (1) when dark, LOW (0) when bright
-        - Some output LOW (0) when dark, HIGH (1) when bright
-        
-        If your sensor always shows "low light" even when bright,
-        use the --invert-light-sensor flag or adjust the threshold
-        potentiometer on the sensor module.
-        """
+    def _read_raw_dark(self) -> bool:
+        """Read raw sensor value and interpret as dark/not dark."""
         if self.initialized and LIGHT_SENSOR_AVAILABLE:
             try:
                 raw_value = GPIO.input(self.pin)
@@ -97,16 +99,55 @@ class LightSensor:
             except Exception as e:
                 print(f"Error reading light sensor: {e}")
                 return False
+        return False
+    
+    def is_dark(self) -> bool:
+        """
+        Returns True if sensor detects darkness (debounced).
         
-        # Simulation mode - randomly simulate light conditions
-        # 5% chance of being dark (for testing purposes)
-        return random.random() < 0.05
+        The sensor must read the same state for `debounce_time` seconds
+        before the state actually changes. This prevents flickering when
+        the sensor is near its threshold.
+        """
+        # If disabled, always return False (not dark)
+        if self.disabled:
+            return False
+        
+        # Simulation mode
+        if not self.initialized or not LIGHT_SENSOR_AVAILABLE:
+            # Simulation: 5% chance of being dark (for testing)
+            return random.random() < 0.05
+        
+        # Read current raw state
+        current_raw_dark = self._read_raw_dark()
+        current_time = time.time()
+        
+        # If raw state changed, reset the stability timer
+        if current_raw_dark != self._last_raw_dark:
+            self._last_raw_dark = current_raw_dark
+            self._state_stable_since = current_time
+        
+        # Check if raw state has been stable long enough to change the debounced state
+        time_stable = current_time - self._state_stable_since
+        if time_stable >= self.debounce_time:
+            # State has been stable long enough - update the debounced state
+            if self._stable_state != current_raw_dark:
+                self._stable_state = current_raw_dark
+                # Only print when state actually changes
+                if current_raw_dark:
+                    print(f"[Light Sensor] State changed to DARK (stable for {self.debounce_time}s)")
+                else:
+                    print(f"[Light Sensor] State changed to BRIGHT (stable for {self.debounce_time}s)")
+        
+        return self._stable_state
     
     def get_raw_value(self) -> int:
         """
         Get the raw GPIO value for debugging.
         Returns 0 or 1, or -1 if not available.
         """
+        if self.disabled:
+            return -1
         if self.initialized and LIGHT_SENSOR_AVAILABLE:
             try:
                 return GPIO.input(self.pin)
@@ -116,11 +157,16 @@ class LightSensor:
     
     def debug_print(self):
         """Print debug info about sensor state."""
+        if self.disabled:
+            print(f"[Light Sensor] DISABLED - always returns 'not dark'")
+            return -1, False
         raw = self.get_raw_value()
-        is_dark = self.is_dark()
-        print(f"[Light Sensor] GPIO Pin {self.pin}: raw={raw}, is_dark={is_dark}")
-        print(f"  -> If sensor always shows wrong state, edit is_dark() logic in camera_stream.py")
-        return raw, is_dark
+        raw_dark = self._read_raw_dark()
+        stable_dark = self._stable_state
+        print(f"[Light Sensor] GPIO Pin {self.pin}:")
+        print(f"  raw_value={raw}, raw_is_dark={raw_dark}, debounced_is_dark={stable_dark}")
+        print(f"  invert_logic={self.invert_logic}, debounce_time={self.debounce_time}s")
+        return raw, stable_dark
     
     def cleanup(self):
         """Clean up GPIO resources."""
@@ -325,16 +371,8 @@ class Camera:
                 # Add timestamp
                 cv2.putText(frame, time.strftime("%H:%M:%S"), (10, self.height - 10),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
-                
-                # Print warning to console (only once when state changes)
-                if not hasattr(self, '_was_dark') or not self._was_dark:
-                    print("WARNING: Low light level detected! Camera vision may be affected.")
-                    self._was_dark = True
-            else:
-                # Light is normal - reset state
-                if hasattr(self, '_was_dark') and self._was_dark:
-                    print("INFO: Light levels restored to normal.")
-                self._was_dark = False
+            
+            # Note: State change messages are now handled by LightSensor class with debouncing
         
         except Exception as e:
             print(f"Error checking light sensor: {e}")
@@ -406,7 +444,9 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     allow_reuse_address = True  # Allow reuse of address after server closes
 
 
-def start_camera_server(port=8080, camera_device=-1, resolution=(640, 480), light_sensor_pin=24, invert_light_sensor=False):
+def start_camera_server(port=8080, camera_device=-1, resolution=(640, 480), 
+                        light_sensor_pin=24, invert_light_sensor=False, 
+                        disable_light_sensor=False, debounce_time=1.0):
     """
     Start the MJPEG camera streaming server with light sensor integration.
     
@@ -416,6 +456,8 @@ def start_camera_server(port=8080, camera_device=-1, resolution=(640, 480), ligh
         resolution: Camera resolution tuple (width, height)
         light_sensor_pin: GPIO pin for light sensor (default: 24)
         invert_light_sensor: If True, inverts the light sensor logic
+        disable_light_sensor: If True, disables light sensor entirely
+        debounce_time: Seconds sensor must be stable before state changes
     """
     global img_show, light_sensor
     
@@ -425,20 +467,33 @@ def start_camera_server(port=8080, camera_device=-1, resolution=(640, 480), ligh
     print(f"   Port: {port}")
     print(f"   Resolution: {resolution[0]}x{resolution[1]}")
     print(f"   OpenCV available: {CV2_AVAILABLE}")
-    print(f"   Light sensor GPIO: {light_sensor_pin}")
-    print(f"   Light sensor inverted: {invert_light_sensor}")
+    if disable_light_sensor:
+        print(f"   Light sensor: DISABLED")
+    else:
+        print(f"   Light sensor GPIO: {light_sensor_pin}")
+        print(f"   Light sensor inverted: {invert_light_sensor}")
+        print(f"   Light sensor debounce: {debounce_time}s")
     print("=" * 50)
     
-    # Initialize light sensor (same as FYP_Robot)
+    # Initialize light sensor
     print("\nInitializing light sensor...")
-    light_sensor = LightSensor(pin=light_sensor_pin, invert_logic=invert_light_sensor)
-    if light_sensor.initialized:
-        print(f"Light sensor initialized on GPIO pin {light_sensor_pin}")
+    light_sensor = LightSensor(
+        pin=light_sensor_pin, 
+        invert_logic=invert_light_sensor,
+        disabled=disable_light_sensor,
+        debounce_time=debounce_time
+    )
+    
+    if disable_light_sensor:
+        print("Light sensor DISABLED - no low-light warnings will appear")
+    elif light_sensor.initialized:
         # Debug print to help troubleshoot
         print("\n--- Light Sensor Debug ---")
         light_sensor.debug_print()
-        print("If the above is_dark value is wrong for current lighting,")
-        print("try running with --invert-light-sensor flag")
+        print("\nTroubleshooting:")
+        print("  - If always shows 'dark' when bright: use --invert-light-sensor")
+        print("  - If flickering rapidly: increase --debounce-time (default 1.0s)")  
+        print("  - To disable entirely: use --disable-light-sensor")
         print("--------------------------\n")
     else:
         print("Light sensor running in simulation mode")
@@ -519,13 +574,17 @@ Light Sensor Integration:
   - "LOW LIGHT LEVEL DETECTED" warning popup
   - Warning message in console
   
-  This matches the behavior of the FYP_Robot main.py
-  
 Light Sensor Troubleshooting:
-  If the sensor always shows "LOW LIGHT" even when bright, try:
-  1. Use --invert-light-sensor flag to flip the detection logic
-  2. Adjust the threshold potentiometer on your sensor module
-  3. Check the GPIO pin connection
+  If the sensor always shows "LOW LIGHT" even when bright:
+    python camera_stream.py --invert-light-sensor
+    
+  If the sensor flickers rapidly between dark/bright:
+    python camera_stream.py --debounce-time 2.0
+    
+  To disable the light sensor entirely:
+    python camera_stream.py --disable-light-sensor
+    
+  You can also adjust the threshold potentiometer on your sensor module.
         """
     )
     parser.add_argument("--port", type=int, default=8081, help="HTTP server port (default: 8081)")
@@ -535,6 +594,10 @@ Light Sensor Troubleshooting:
     parser.add_argument("--light-sensor-pin", type=int, default=24, help="GPIO pin for light sensor (default: 24)")
     parser.add_argument("--invert-light-sensor", action="store_true", 
                        help="Invert light sensor logic (use if sensor always shows wrong state)")
+    parser.add_argument("--disable-light-sensor", action="store_true",
+                       help="Disable light sensor entirely (no low-light warnings)")
+    parser.add_argument("--debounce-time", type=float, default=1.0,
+                       help="Seconds sensor must be stable before state changes (default: 1.0)")
     
     args = parser.parse_args()
     
@@ -543,7 +606,9 @@ Light Sensor Troubleshooting:
         camera_device=args.device,
         resolution=(args.width, args.height),
         light_sensor_pin=args.light_sensor_pin,
-        invert_light_sensor=args.invert_light_sensor
+        invert_light_sensor=args.invert_light_sensor,
+        disable_light_sensor=args.disable_light_sensor,
+        debounce_time=args.debounce_time
     )
 
 
