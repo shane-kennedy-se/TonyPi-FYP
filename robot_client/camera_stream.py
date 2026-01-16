@@ -90,12 +90,12 @@ class LightSensor:
         if self.initialized and LIGHT_SENSOR_AVAILABLE:
             try:
                 raw_value = GPIO.input(self.pin)
-                # Default: LOW (0) = dark, HIGH (1) = bright
-                # With invert_logic: HIGH (1) = dark, LOW (0) = bright  
+                # Default (same as FYP_Robot): HIGH (1) = dark/blocked, LOW (0) = bright
+                # With invert_logic: LOW (0) = dark, HIGH (1) = bright
                 if self.invert_logic:
-                    return raw_value == 1
-                else:
                     return raw_value == 0
+                else:
+                    return raw_value == 1  # HIGH = dark (sensor blocked)
             except Exception as e:
                 print(f"Error reading light sensor: {e}")
                 return False
@@ -164,8 +164,13 @@ class LightSensor:
         raw_dark = self._read_raw_dark()
         stable_dark = self._stable_state
         print(f"[Light Sensor] GPIO Pin {self.pin}:")
-        print(f"  raw_value={raw}, raw_is_dark={raw_dark}, debounced_is_dark={stable_dark}")
-        print(f"  invert_logic={self.invert_logic}, debounce_time={self.debounce_time}s")
+        print(f"  raw_value={raw} ({'HIGH' if raw == 1 else 'LOW'})")
+        print(f"  raw_is_dark={raw_dark}, debounced_is_dark={stable_dark}")
+        print(f"  Logic: {'HIGH=dark (default)' if not self.invert_logic else 'LOW=dark (inverted)'}")
+        print(f"  debounce_time={self.debounce_time}s")
+        print(f"")
+        print(f"  >> Current light status: {'DARK' if raw_dark else 'BRIGHT'}")
+        print(f"  >> Cover the sensor now - raw_value should change to 1 (HIGH)")
         return raw, stable_dark
     
     def cleanup(self):
