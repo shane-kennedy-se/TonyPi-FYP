@@ -211,6 +211,7 @@ def navigate_to_station(frame_getter, timeout=60, use_360_scan=False):
 
 if __name__ == "__main__":
     print("Use navigate_to_station(frame_getter) from main.py")
+    
 # ============ BACKGROUND THREAD FUNCTIONS ============
 def _navigate_background_worker(timeout=60, use_360_scan=False):
     """
