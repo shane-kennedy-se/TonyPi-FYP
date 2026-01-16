@@ -48,7 +48,7 @@ def run_action_async(action_name):
 # ============ MOVEMENT THREAD ============
 
 def move():
-    global object_center_x, object_width, x_dis, y_dis, head_turn, d_x, d_y, qr_scanning, lost_frames
+    global object_center_x, object_width, x_dis, y_dis, head_turn, d_x, d_y, qr_scanning, lost_frames, scan_time_last
     
     while True:
         if qr_scanning:
