@@ -485,50 +485,115 @@ class MJPGHandler(BaseHTTPRequestHandler):
         """Handle GET requests."""
         global img_show
         
-        if self.path == '/?action=snapshot':
-            # Return single JPEG snapshot
+        # Handle root/test request
+        if self.path == '/' or self.path == '/test':
+            self.send_response(200)
+            self.send_header('Content-type', 'text/html')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            status = "OK" if img_show is not None else "NO FRAME"
+            frame_info = f"{img_show.shape}" if img_show is not None else "None"
+            html = f"""
+            <html>
+            <head><title>Camera Stream Status</title></head>
+            <body>
+                <h1>Camera Stream Server</h1>
+                <p>Status: {status}</p>
+                <p>Frame available: {img_show is not None}</p>
+                <p>Frame shape: {frame_info}</p>
+                <p><a href="/?action=stream">MJPEG Stream</a></p>
+                <p><a href="/?action=snapshot">Snapshot</a></p>
+            </body>
+            </html>
+            """
+            self.wfile.write(html.encode())
+            return
+        
+        # Handle snapshot request
+        if 'action=snapshot' in self.path:
             if img_show is not None:
                 try:
                     ret, jpg = cv2.imencode('.jpg', img_show, 
                                            [int(cv2.IMWRITE_JPEG_QUALITY), 100])
-                    jpg_bytes = jpg.tobytes()
-                    self.send_response(200)
-                    self.send_header('Content-type', 'image/jpeg')
-                    self.send_header('Content-length', len(jpg_bytes))
-                    self.send_header('Access-Control-Allow-Origin', '*')
-                    self.end_headers()
-                    self.wfile.write(jpg_bytes)
+                    if ret:
+                        jpg_bytes = jpg.tobytes()
+                        self.send_response(200)
+                        self.send_header('Content-type', 'image/jpeg')
+                        self.send_header('Content-length', len(jpg_bytes))
+                        self.send_header('Access-Control-Allow-Origin', '*')
+                        self.end_headers()
+                        self.wfile.write(jpg_bytes)
+                    else:
+                        self.send_error(500, 'Failed to encode image')
                 except Exception as e:
-                    print(f'Snapshot error: {e}')
+                    print(f'[HTTP] Snapshot error: {e}')
+                    import traceback
+                    traceback.print_exc()
                     self.send_error(500, str(e))
             else:
+                print('[HTTP] Snapshot requested but no frame available')
                 self.send_error(503, 'No frame available')
         else:
-            # MJPEG stream
+            # MJPEG stream - handle both /?action=stream and /stream
+            print(f'[HTTP] Stream request from {self.client_address[0]}, path: {self.path}')
             self.send_response(200)
             self.send_header('Content-type', 'multipart/x-mixed-replace; boundary=--boundarydonotcross')
             self.send_header('Access-Control-Allow-Origin', '*')
             self.end_headers()
             
+            frame_count = 0
+            last_log_time = time.time()
+            no_frame_count = 0
+            
             while True:
                 try:
                     if img_show is not None:
-                        ret, jpg = cv2.imencode('.jpg', img_show, 
-                                               [int(cv2.IMWRITE_JPEG_QUALITY), 70,
-                                                cv2.IMWRITE_JPEG_OPTIMIZE, 1])
-                        jpg_bytes = jpg.tobytes()
-                        
-                        self.wfile.write(b'--boundarydonotcross\r\n')
-                        self.send_header('Content-type', 'image/jpeg')
-                        self.send_header('Content-length', len(jpg_bytes))
-                        self.end_headers()
-                        self.wfile.write(jpg_bytes)
+                        try:
+                            ret, jpg = cv2.imencode('.jpg', img_show, 
+                                                   [int(cv2.IMWRITE_JPEG_QUALITY), 70,
+                                                    cv2.IMWRITE_JPEG_OPTIMIZE, 1])
+                            if ret:
+                                jpg_bytes = jpg.tobytes()
+                                
+                                # MJPEG stream format
+                                self.wfile.write(b'--boundarydonotcross\r\n')
+                                self.send_header('Content-type', 'image/jpeg')
+                                self.send_header('Content-length', str(len(jpg_bytes)))
+                                self.end_headers()  # This sends the final CRLF
+                                self.wfile.write(jpg_bytes)
+                                self.wfile.write(b'\r\n')  # CRLF after image data (required for MJPEG)
+                                self.wfile.flush()  # Ensure data is sent immediately
+                                
+                                frame_count += 1
+                                no_frame_count = 0
+                                
+                                # Log every 5 seconds
+                                if time.time() - last_log_time >= 5.0:
+                                    print(f'[HTTP] Stream: sent {frame_count} frames to {self.client_address[0]}')
+                                    last_log_time = time.time()
+                            else:
+                                print(f'[HTTP] Failed to encode frame')
+                        except Exception as e:
+                            print(f'[HTTP] Error encoding/sending frame: {e}')
+                            import traceback
+                            traceback.print_exc()
+                    else:
+                        no_frame_count += 1
+                        # Log if no frames for a while
+                        if no_frame_count == 1:
+                            print(f'[HTTP] Stream: waiting for frames (img_show is None)')
+                        elif no_frame_count % 100 == 0:  # Log every ~3 seconds
+                            print(f'[HTTP] Stream: still waiting for frames... ({no_frame_count} checks)')
                     
                     # CRITICAL: Add frame rate limiting for smooth streaming (~30fps)
-                    # Without this, the loop spins too fast causing lag and CPU spikes
                     time.sleep(0.033)
+                except (ConnectionResetError, BrokenPipeError, OSError) as e:
+                    print(f'[HTTP] Client disconnected: {e}')
+                    break
                 except Exception as e:
-                    print(f"Stream error: {e}")
+                    print(f"[HTTP] Stream error: {e}")
+                    import traceback
+                    traceback.print_exc()
                     break
 
 
@@ -658,19 +723,23 @@ def start_camera_server(port=8080, camera_device=-1, resolution=(640, 480),
         last_status_time = time.time()
         
         print("\n📹 Starting camera frame loop...")
+        print(f"   Initial img_show state: {img_show is not None}")
         while True:
             ret, frame = camera.read()
             if ret and frame is not None:
-                img_show = frame
+                # Make a copy to avoid threading issues
+                img_show = frame.copy() if hasattr(frame, 'copy') else frame
                 frame_count += 1
                 # Print status every 5 seconds
                 if time.time() - last_status_time >= 5.0:
                     print(f"📹 Camera streaming: {frame_count} frames captured, {img_show.shape[1]}x{img_show.shape[0]}")
+                    print(f"   img_show is set: {img_show is not None}, type: {type(img_show)}")
                     last_status_time = time.time()
             else:
                 # No frame available - this is OK if camera just started
                 if frame_count == 0 and time.time() - last_status_time >= 2.0:
                     print(f"⏳ Waiting for camera frames... (camera.opened={camera.opened}, simulation={camera.simulation_mode})")
+                    print(f"   camera.read() returned: ret={ret}, frame is None={frame is None}")
                     last_status_time = time.time()
             
             # Maintain consistent frame rate
