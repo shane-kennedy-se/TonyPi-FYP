@@ -705,9 +705,27 @@ def start_camera_server(port=8080, camera_device=-1, resolution=(640, 480),
     print("\n" + "=" * 50)
     print("CAMERA SERVER RUNNING")
     print("=" * 50)
-    print(f"Stream URL: http://localhost:{port}/?action=stream")
-    print(f"Snapshot URL: http://localhost:{port}/?action=snapshot")
-    print("\nLight sensor integration enabled:")
+    
+    # Get local IP for network access
+    try:
+        import socket
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        local_ip = s.getsockname()[0]
+        s.close()
+        print(f"Local IP address: {local_ip}")
+        print(f"Stream URL (local): http://{local_ip}:{port}/?action=stream")
+        print(f"Snapshot URL (local): http://{local_ip}:{port}/?action=snapshot")
+        print(f"Status page: http://{local_ip}:{port}/test")
+    except:
+        print(f"Stream URL: http://localhost:{port}/?action=stream")
+        print(f"Snapshot URL: http://localhost:{port}/?action=snapshot")
+    
+    print(f"\n⚠️  NETWORK REQUIREMENTS:")
+    print(f"   - Frontend/browser must be on the SAME network as this robot")
+    print(f"   - Or robot IP must be accessible from your network")
+    print(f"   - Firewall must allow port {port}")
+    print(f"\nLight sensor integration enabled:")
     print("  - Red border popup will appear when low light is detected")
     print("  - Warning: 'LOW LIGHT LEVEL DETECTED'")
     print("=" * 50)
