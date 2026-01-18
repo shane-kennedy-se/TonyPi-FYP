@@ -15,11 +15,12 @@ HEAD_TILT_SERVO = 1
 
 # Configuration Constants
 PAN_CENTER = 1450  
-TILT_CENTER = 1450
+TILT_CENTER = 1700  # Lower head to focus on table level
+TILT_START = 1700  # Start low for table-level scanning
 SERVO_PAN_MIN = 1000
 SERVO_PAN_MAX = 1900
-SERVO_TILT_MIN = 1050
-SERVO_TILT_MAX = 1500
+SERVO_TILT_MIN = 1600  # Limit upward movement - focus on lower areas
+SERVO_TILT_MAX = 1900  # Scan more downward for table level
 
 # Communication & State
 scan_result_queue = queue.Queue()
@@ -30,13 +31,15 @@ qr_scanning = False
 object_center_x = -1
 object_width = 0
 lost_frames = 0  # Counter to prevent losing lock during walking shakes
-MAX_LOST_FRAMES = 15 # Roughly 0.5 - 1.0 second of "memory"
+MAX_LOST_FRAMES = 30  # ~0.6 seconds of memory to maintain lock while walking
+qr_locked = False  # Track if QR has been locked
+last_known_x = -1  # Remember last QR position
 
 head_turn = 'left_right'
 x_dis = PAN_CENTER
-y_dis = TILT_CENTER
+y_dis = TILT_START  # Start scanning at table level
 d_x = 20  
-d_y = 20
+d_y = 15  # Slower vertical scan for thorough table-level coverage
 scan_time_last = 0
 
 # ============ HELPER FUNCTIONS ============
@@ -48,13 +51,23 @@ def run_action_async(action_name):
 # ============ MOVEMENT THREAD ============
 
 def move():
-    global object_center_x, object_width, x_dis, y_dis, head_turn, d_x, d_y, qr_scanning, lost_frames, scan_time_last
+    global object_center_x, object_width, x_dis, y_dis, head_turn, d_x, d_y, qr_scanning, lost_frames, scan_time_last, qr_locked, last_known_x
     
     while True:
         if qr_scanning:
-            # --- CASE 1: TARGET LOCKED ---
-            # We move if we see it OR if we recently saw it (lost_frames < threshold)
-            if object_center_x >= 0 or (lost_frames < MAX_LOST_FRAMES and lost_frames > 0):
+            # --- CASE 1: TARGET LOCKED AND TRACKING ---
+            if qr_locked and (object_center_x >= 0 or lost_frames < MAX_LOST_FRAMES):
+                
+                # Keep head centered when tracking locked QR
+                if lost_frames < MAX_LOST_FRAMES // 2 and object_center_x >= 0:
+                    # Adjust head to track QR position for better visual lock
+                    target_x = PAN_CENTER
+                    if object_center_x < 240:
+                        target_x = PAN_CENTER - 100
+                    elif object_center_x > 400:
+                        target_x = PAN_CENTER + 100
+                    x_dis = target_x
+                    ctl.set_pwm_servo_pulse(HEAD_PAN_SERVO, x_dis, 50)
                 
                 # 1. Align Head/Body
                 if abs(x_dis - PAN_CENTER) > 80:
@@ -81,9 +94,10 @@ def move():
                     elif object_width >= 145:
                         print("🎯 STATION REACHED")
                         qr_scanning = False 
+                        qr_locked = False
 
-            # --- CASE 2: SEARCHING ---
-            elif object_center_x == -1:
+            # --- CASE 2: INITIAL SEARCHING (not locked yet) ---
+            elif not qr_locked and object_center_x == -1:
                 current_time = time.time()
                 if current_time - scan_time_last > 0.03:
                     if head_turn == 'left_right':
@@ -100,6 +114,16 @@ def move():
                     ctl.set_pwm_servo_pulse(HEAD_TILT_SERVO, y_dis, 20)
                     ctl.set_pwm_servo_pulse(HEAD_PAN_SERVO, x_dis, 20)
                     scan_time_last = current_time
+            
+            # --- CASE 3: LOCKED BUT LOST VISION (keep walking toward last known position) ---
+            elif qr_locked and lost_frames >= MAX_LOST_FRAMES:
+                # Don't rescan, just keep walking toward where we last saw it
+                if last_known_x < 240:
+                    run_action_async('turn_left')
+                elif last_known_x > 400:
+                    run_action_async('turn_right')
+                else:
+                    run_action_async('go_forward')
                 
         time.sleep(0.02)
 
@@ -111,10 +135,11 @@ th.start()
 # ============ VISION PROCESS ============
 
 def navigate_to_station(frame_getter, timeout=60):
-    global qr_scanning, object_center_x, object_width, lost_frames
+    global qr_scanning, object_center_x, object_width, lost_frames, qr_locked, last_known_x
 
     print("[INFO] Locking QR Station...")
     qr_scanning = True
+    qr_locked = False
     start_time = time.time()
     station_data = None
 
@@ -136,6 +161,16 @@ def navigate_to_station(frame_getter, timeout=60):
             (x, y, w, h) = barcode.rect
             object_center_x = x + (w // 2)
             object_width = w
+            last_known_x = object_center_x
+            
+            # Lock QR after first detection
+            if not qr_locked:
+                qr_locked = True
+                print("[INFO] 🎯 QR LOCKED! Starting navigation...")
+            
+            # Debug: Show tracking info every 10 frames
+            if lost_frames % 10 == 0:
+                print(f"[TRACK] QR detected: x={object_center_x}, width={object_width}, lost_frames={lost_frames}")
         else:
             # Increment lost frames instead of immediately going to -1
             lost_frames += 1
