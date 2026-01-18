@@ -122,13 +122,15 @@ class RobotActions:
             print(f"[ERROR] Label Insertion failed: {e}")
             return False
 
-    def run_transport_box(self, steps=5):
-        """Execute transport box sequence
+    def run_transport_box(self, steps=5, use_qr=False):
+        """Execute transport box sequence with optional QR code navigation
         
         Args:
-            steps (int): Number of steps to walk forward
+            steps (int): Number of steps to walk forward (used if use_qr=False)
+            use_qr (bool): Use QR code scanning and navigation if True
         """
-        print(f"=== TonyPi Pro: Transport Box Sequence ({steps} steps) ===")
+        mode_str = "QR Navigation" if use_qr else f"Fixed Steps ({steps})"
+        print(f"=== TonyPi Pro: Transport Box Sequence - {mode_str} ===")
         time.sleep(2)
 
         try:
@@ -137,14 +139,45 @@ class RobotActions:
             AGC.runActionGroup("PickUp")
             time.sleep(0.5)
 
-            # Step 2: Walk forward
-            print("Step 2: Walking forward...")
-            for i in range(steps):
-                print(f"  Walking step {i+1}/{steps}...")
-                AGC.runActionGroup("WalkOneStep")
-                time.sleep(0.5)
+            if use_qr:
+                # Step 2: Scan for QR code and navigate
+                print("Step 2: Scanning for QR code...")
+                try:
+                    from qr_navigate import start_qr_navigation_async, get_navigation_result
+                    
+                    start_qr_navigation_async(timeout=60)
+                    
+                    # Wait for navigation to complete
+                    print("Step 3: Navigating to QR code...")
+                    result = get_navigation_result()
+                    timeout = time.time() + 60
+                    while result is None and time.time() < timeout:
+                        time.sleep(0.5)
+                        result = get_navigation_result()
+                    
+                    if result:
+                        print(f"Reached destination: {result}")
+                    else:
+                        print("[WARNING] QR navigation timeout, falling back to walking")
+                        for i in range(steps):
+                            print(f"  Walking step {i+1}/{steps}...")
+                            AGC.runActionGroup("WalkOneStep")
+                            time.sleep(0.5)
+                except ImportError:
+                    print("[ERROR] QR navigation module not available, using fixed steps instead")
+                    for i in range(steps):
+                        print(f"  Walking step {i+1}/{steps}...")
+                        AGC.runActionGroup("WalkOneStep")
+                        time.sleep(0.5)
+            else:
+                # Step 2: Walk forward (fixed steps)
+                print("Step 2: Walking forward...")
+                for i in range(steps):
+                    print(f"  Walking step {i+1}/{steps}...")
+                    AGC.runActionGroup("WalkOneStep")
+                    time.sleep(0.5)
 
-            # Step 3: Put down the object
+            # Final Step: Put down the object
             print("Step 3: Placing object down...")
             AGC.runActionGroup("PutDown")
 

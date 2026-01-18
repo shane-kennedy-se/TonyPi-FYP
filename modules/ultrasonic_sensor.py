@@ -54,18 +54,26 @@ class UltrasonicSensor:
         try:
             # Send trigger pulse
             lgpio.gpio_write(self.h, self.trig_pin, 1)
-            time.sleep(0.00001)
+            time.sleep(0.00001)  # 10 microseconds trigger pulse
             lgpio.gpio_write(self.h, self.trig_pin, 0)
             
-            start_time = time.time()
-            stop_time = time.time()
+            # ⭐ CRITICAL FIX: Wait for sensor to stabilize after trigger
+            # The sensor needs time to transmit ultrasonic burst before echo starts
+            time.sleep(0.00005)  # 50 microseconds stabilization delay
             
-            # Wait for echo start
+            # Wait for echo start with timeout (max 50ms = ~8.5m range)
+            start_time = time.time()
+            timeout = 0.05
             while lgpio.gpio_read(self.h, self.echo_pin) == 0:
+                if time.time() - start_time > timeout:
+                    return None  # Timeout, no echo received
                 start_time = time.time()
             
-            # Wait for echo end
+            # Wait for echo end with timeout
+            stop_time = time.time()
             while lgpio.gpio_read(self.h, self.echo_pin) == 1:
+                if time.time() - stop_time > timeout:
+                    return None  # Timeout, echo didn't end properly
                 stop_time = time.time()
             
             time_elapsed = stop_time - start_time
@@ -122,11 +130,14 @@ if __name__ == "__main__":
     sensor = UltrasonicSensor()
     try:
         while True:
-            dist = sensor.get_distance()
-            if dist is not None:
-                obstacle = sensor.is_obstacle_detected()
+            # is_obstacle_detected() internally calls get_distance(), 
+            # so we only call it once to avoid redundant measurements
+            obstacle = sensor.is_obstacle_detected()
+            
+            # Use the last measured distance (already obtained in is_obstacle_detected)
+            if sensor.last_distance is not None:
                 status = "🚨 OBSTACLE DETECTED!" if obstacle else "✅ Clear"
-                print(f"Distance: {dist}cm - {status}")
+                print(f"Distance: {sensor.last_distance}cm - {status}")
             else:
                 print("Sensor unavailable")
             time.sleep(0.2)
