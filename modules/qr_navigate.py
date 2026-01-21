@@ -15,12 +15,12 @@ HEAD_TILT_SERVO = 1
 
 # Configuration Constants
 PAN_CENTER = 1450  
-TILT_CENTER = 1450  # Lower head to focus on table level
-TILT_START = 1100  # Start low for table-level scanning
+TILT_CENTER = 1150  # Fixed stable position - looking at table level (no upward scanning)
+TILT_START = 1150   # Start at stable table-level position
 SERVO_PAN_MIN = 1000
 SERVO_PAN_MAX = 1900
-SERVO_TILT_MIN = 1600  # Limit upward movement - focus on lower areas
-SERVO_TILT_MAX = 1900  # Scan more downward for table level
+SERVO_TILT_MIN = 1150  # Fixed tilt - no vertical scanning
+SERVO_TILT_MAX = 1150  # Fixed tilt - no vertical scanning
 
 # Communication & State
 scan_result_queue = queue.Queue()
@@ -100,16 +100,13 @@ def move():
             elif not qr_locked and object_center_x == -1:
                 current_time = time.time()
                 if current_time - scan_time_last > 0.03:
-                    if head_turn == 'left_right':
-                        x_dis += d_x
-                        if x_dis >= SERVO_PAN_MAX or x_dis <= SERVO_PAN_MIN:
-                            d_x = -d_x
-                            head_turn = 'up_down'
-                    elif head_turn == 'up_down':
-                        y_dis += d_y
-                        if y_dis >= SERVO_TILT_MAX or y_dis <= SERVO_TILT_MIN:
-                            d_y = -d_y
-                        head_turn = 'left_right'
+                    # Only scan left-right (PAN), keep TILT fixed at 1150
+                    x_dis += d_x
+                    if x_dis >= SERVO_PAN_MAX or x_dis <= SERVO_PAN_MIN:
+                        d_x = -d_x
+                    
+                    # Keep y_dis fixed at TILT_CENTER
+                    y_dis = TILT_CENTER
                     
                     ctl.set_pwm_servo_pulse(HEAD_TILT_SERVO, y_dis, 20)
                     ctl.set_pwm_servo_pulse(HEAD_PAN_SERVO, x_dis, 20)
