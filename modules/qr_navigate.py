@@ -16,7 +16,7 @@ HEAD_TILT_SERVO = 1
 # Configuration Constants
 PAN_CENTER = 1450  
 TILT_CENTER = 1450  # Lower head to focus on table level
-TILT_START = 900  # Start low for table-level scanning
+TILT_START = 1100  # Start low for table-level scanning
 SERVO_PAN_MIN = 1000
 SERVO_PAN_MAX = 1900
 SERVO_TILT_MIN = 1600  # Limit upward movement - focus on lower areas
