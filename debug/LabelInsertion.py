@@ -44,7 +44,7 @@ def main():
     try:
         # Step 1: Grab the label
         print("Step 1: Grabbing label...")
-        AGC.runActionGroup("GrabLabel")
+        AGC.runActionGroup("GrabSheetNew")
         time.sleep(STEP_DELAY)
 
         # Confirm before proceeding
