@@ -851,6 +851,7 @@ class RobotClient:
         bbox: tuple = None,
         center_x: int = None,
         frame_width: int = 640,
+        frame_height: int = 480,
         state: str = "UNKNOWN",
         is_locked: bool = False,
         nav_cmd: str = None,
@@ -865,6 +866,7 @@ class RobotClient:
             bbox: Bounding box (x1, y1, x2, y2)
             center_x: Center X coordinate of detection
             frame_width: Camera frame width
+            frame_height: Camera frame height
             state: Current robot state
             is_locked: Whether target is locked
             nav_cmd: Navigation command (TURN_LEFT, TURN_RIGHT, LOCKED)
@@ -883,6 +885,7 @@ class RobotClient:
                 "bbox": list(bbox) if bbox else None,
                 "center_x": center_x,
                 "frame_width": frame_width,
+                "frame_height": frame_height,
                 "state": state,
                 "is_locked": is_locked,
                 "navigation_command": nav_cmd,
@@ -1156,6 +1159,34 @@ class RobotClient:
             
         except Exception as e:
             logger.error(f"Error sending command response: {e}")
+    
+    def send_qr_scan(self, qr_data: str, station_name: str = None, action: str = None):
+        """
+        Send QR code scan event to monitoring system.
+        
+        Args:
+            qr_data: QR code content/data
+            station_name: Name of the station (optional)
+            action: Action performed (e.g., 'scanned', 'navigation_complete')
+        """
+        if not self.is_connected:
+            return
+        
+        try:
+            payload = {
+                "robot_id": self.robot_id,
+                "timestamp": datetime.now().isoformat(),
+                "qr_code": qr_data,
+                "station": station_name or "unknown",
+                "action": action or "scanned"
+            }
+            
+            topic = f"tonypi/scan/{self.robot_id}"
+            self.client.publish(topic, json.dumps(payload))
+            logger.info(f"QR scan event sent: {qr_data} - {station_name}")
+            
+        except Exception as e:
+            logger.error(f"Error sending QR scan event: {e}")
     
     # ==========================================
     # HELPER METHODS

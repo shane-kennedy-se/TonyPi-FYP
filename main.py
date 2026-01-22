@@ -176,6 +176,11 @@ def main():
     # Telemetry timing
     last_sensor_send = 0
     SENSOR_SEND_INTERVAL = 2.0  # Send sensor data every 2 seconds
+    last_location_send = 0
+    LOCATION_SEND_INTERVAL = 5.0  # Send location every 5 seconds
+    
+    # Location tracking (simulated/estimated position)
+    robot_position = {"x": 0.0, "y": 0.0, "z": 0.0}
     
     # Initial Voice Check
     voice_module.speak("System online.")
@@ -422,6 +427,16 @@ def main():
                     detected_station = qr_navigate.get_navigation_result()
                     if detected_station:
                         voice_module.speak(f"Reached station {detected_station}. Searching for cardboard.")
+                        
+                        # Send QR scan event to monitoring system
+                        if robot_client:
+                            robot_client.send_qr_scan(
+                                qr_data=detected_station,
+                                station_name=detected_station,
+                                action="navigation_complete"
+                            )
+                            robot_client.send_log("INFO", f"Arrived at station: {detected_station}", "navigation")
+                        
                         # ====================================================
                         # 📝 AUTO QR FLOW: After finding station, search for cardboard
                         # ====================================================
@@ -480,8 +495,7 @@ def main():
                             confidence=conf,
                             bbox=box,
                             center_x=cx,
-                            frame_width=FRAME_WIDTH,
-                            state=current_state,
+                            frame_width=FRAME_WIDTH,                            frame_height=FRAME_HEIGHT,                            state=current_state,
                             is_locked=(nav_cmd == "LOCKED"),
                             nav_cmd=nav_cmd,
                             error=error
@@ -595,6 +609,20 @@ def main():
                 }
                 robot_client.send_sensor_data(sensor_data)
                 last_sensor_send = current_time
+            
+            # Send location updates periodically
+            if robot_client and (current_time - last_location_send) >= LOCATION_SEND_INTERVAL:
+                # Update location based on state (simple simulation)
+                # In a real scenario, you'd use odometry or SLAM
+                if current_state == STATE_ACTING:
+                    robot_position["x"] += 0.1  # Simulate movement
+                
+                robot_client.send_location(
+                    x=robot_position["x"],
+                    y=robot_position["y"],
+                    z=robot_position["z"]
+                )
+                last_location_send = current_time
 
             # Send frame to robot client for streaming (with all overlays)
             if robot_client:
