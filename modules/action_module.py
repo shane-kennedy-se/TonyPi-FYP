@@ -122,7 +122,7 @@ class RobotActions:
             print(f"[ERROR] Label Insertion failed: {e}")
             return False
 
-    def run_transport_box(self, steps=5, use_qr=False):
+    def run_transport_cardboard(self, steps=5, use_qr=False):
         """Execute transport box sequence with optional QR code navigation
         
         Args:
@@ -136,7 +136,7 @@ class RobotActions:
         try:
             # Step 1: Pick up the object
             print("Step 1: Picking up object...")
-            AGC.runActionGroup("PickUp")
+            AGC.runActionGroup("PickUpDiecut2")
             time.sleep(0.5)
 
             if use_qr:
@@ -161,25 +161,25 @@ class RobotActions:
                         print("[WARNING] QR navigation timeout, falling back to walking")
                         for i in range(steps):
                             print(f"  Walking step {i+1}/{steps}...")
-                            AGC.runActionGroup("WalkOneStep")
+                            AGC.runActionGroup("WalkOneStep1")
                             time.sleep(0.5)
                 except ImportError:
                     print("[ERROR] QR navigation module not available, using fixed steps instead")
                     for i in range(steps):
                         print(f"  Walking step {i+1}/{steps}...")
-                        AGC.runActionGroup("WalkOneStep")
+                        AGC.runActionGroup("WalkOneStep1")
                         time.sleep(0.5)
             else:
                 # Step 2: Walk forward (fixed steps)
                 print("Step 2: Walking forward...")
                 for i in range(steps):
                     print(f"  Walking step {i+1}/{steps}...")
-                    AGC.runActionGroup("WalkOneStep")
+                    AGC.runActionGroup("WalkOneStep1")
                     time.sleep(0.5)
 
             # Final Step: Put down the object
             print("Step 3: Placing object down...")
-            AGC.runActionGroup("PutDown")
+            AGC.runActionGroup("PutDown1")
 
             print("=== Task Complete ===")
             return True
@@ -227,56 +227,4 @@ class RobotActions:
 
         except Exception as e:
             print(f"[ERROR] Sheet Flip Over failed: {e}")
-            return False
-
-    def run_pick_up_cardboard(self):
-        """Execute pick up cardboard sequence"""
-        print("=== TonyPi Pro: Pick Up Cardboard Sequence ===")
-        time.sleep(2)
-
-        try:
-            # Step 1: Approach and grab
-            print("Step 1: Approaching and grabbing cardboard...")
-            AGC.runActionGroup("PickUp")
-            time.sleep(1)
-
-            print("=== Task Complete ===")
-            return True
-
-        except Exception as e:
-            print(f"[ERROR] Pick Up Cardboard failed: {e}")
-            return False
-
-    def run_transport_cardboard(self, steps=5):
-        """Execute transport cardboard sequence
-        
-        Args:
-            steps (int): Number of steps to walk forward
-        """
-        print(f"=== TonyPi Pro: Transport Cardboard Sequence ({steps} steps) ===")
-        time.sleep(2)
-
-        try:
-            # Step 1: Pick up the cardboard
-            print("Step 1: Picking up cardboard...")
-            AGC.runActionGroup("PickUp")
-            time.sleep(0.5)
-
-            # Step 2: Walk forward
-            print("Step 2: Walking forward...")
-            for i in range(steps):
-                print(f"  Walking step {i+1}/{steps}...")
-                AGC.runActionGroup("WalkOneStep")
-                time.sleep(0.5)
-
-            # Step 3: Put down the cardboard
-            print("Step 3: Placing cardboard down...")
-            AGC.runActionGroup("PutDown")
-            time.sleep(1)
-
-            print("=== Task Complete ===")
-            return True
-
-        except Exception as e:
-            print(f"[ERROR] Transport Cardboard failed: {e}")
             return False
