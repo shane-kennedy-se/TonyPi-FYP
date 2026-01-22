@@ -102,7 +102,7 @@ class RobotActions:
 
             # Step 2: Lift label for insertion
             print("Step 2: Lifting label for insertion...")
-            AGC.runActionGroup("LiftLabelInsertion")
+            AGC.runActionGroup("LiftLabelInsertion1")
             time.sleep(STEP_DELAY)
 
             # Step 3: Put label
