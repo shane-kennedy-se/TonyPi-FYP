@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
 """
-TonyPi Robot Client Module - MQTT Telemetry Integration
+TonyPi Robot Client Module - MQTT Telemetry + Camera Streaming
 
-This module provides a simple interface for sending robot telemetry data
-to a monitoring system via MQTT. Designed to be imported and used from main.py.
+This module provides:
+1. MQTT telemetry for sending robot data to monitoring system
+2. MJPEG camera streaming server (receives frames from main.py)
 
 Usage:
     from modules.robot_client import RobotClient
     
-    client = RobotClient(mqtt_broker="192.168.1.100")
-    client.start()  # Connects in background
+    client = RobotClient(mqtt_broker="192.168.1.100", camera_port=8081)
+    client.start()  # Connects MQTT + starts camera server
     
     # In your main loop:
+    client.update_frame(frame)  # Pass camera frame from main.py
     client.send_vision_data(detection_result)
     client.send_sensor_data(sensors)
-    client.send_log("INFO", "Robot started")
     
     # When done:
     client.stop()
@@ -28,9 +29,20 @@ import threading
 import platform
 import socket
 import psutil
+import random
 from datetime import datetime
 from typing import Dict, Any, Optional, Callable
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from socketserver import ThreadingMixIn
 import logging
+
+# Try to import OpenCV for frame encoding
+try:
+    import cv2
+    import numpy as np
+    CV2_AVAILABLE = True
+except ImportError:
+    CV2_AVAILABLE = False
 
 # Configure logging
 logging.basicConfig(
@@ -46,6 +58,158 @@ try:
 except ImportError:
     MQTT_AVAILABLE = False
     logger.warning("paho-mqtt not installed. Run: pip install paho-mqtt")
+
+# Try to import HiWonder SDK for real hardware access
+HARDWARE_SDK_AVAILABLE = False
+board = None
+controller = None
+
+try:
+    # Add TonyPi SDK path
+    if os.path.exists('/home/pi/TonyPi'):
+        sys.path.append('/home/pi/TonyPi')
+        sys.path.append('/home/pi/TonyPi/HiwonderSDK')
+    
+    from hiwonder import ros_robot_controller_sdk as rrc
+    from hiwonder.Controller import Controller
+    
+    # Initialize hardware
+    board = rrc.Board()
+    controller = Controller(board)
+    board.enable_reception(True)
+    
+    HARDWARE_SDK_AVAILABLE = not getattr(board, 'simulation_mode', True)
+    logger.info(f"HiWonder SDK loaded. Hardware mode: {HARDWARE_SDK_AVAILABLE}")
+except ImportError as e:
+    logger.warning(f"HiWonder SDK not available: {e}")
+except Exception as e:
+    logger.warning(f"Hardware initialization failed: {e}")
+
+
+# ==========================================
+# MJPEG CAMERA STREAMING SERVER
+# ==========================================
+
+# Global frame storage for HTTP handler access
+_current_frame = None
+_frame_lock = threading.Lock()
+
+
+class MJPEGHandler(BaseHTTPRequestHandler):
+    """HTTP request handler for MJPEG streaming."""
+    
+    def log_message(self, format, *args):
+        """Suppress default logging."""
+        pass
+    
+    def do_GET(self):
+        """Handle GET requests."""
+        global _current_frame
+        
+        # Handle root/status request
+        if self.path == '/' or self.path == '/test' or self.path == '/status':
+            self.send_response(200)
+            self.send_header('Content-type', 'text/html')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            
+            with _frame_lock:
+                has_frame = _current_frame is not None
+                frame_shape = _current_frame.shape if has_frame else None
+            
+            status = "OK - Receiving frames" if has_frame else "Waiting for frames from main.py"
+            frame_info = f"{frame_shape}" if frame_shape else "None"
+            
+            html = f"""
+            <html>
+            <head><title>TonyPi Camera Stream</title></head>
+            <body style="font-family: Arial; background: #1a1a2e; color: white; padding: 20px;">
+                <h1>🤖 TonyPi Camera Stream</h1>
+                <p><b>Status:</b> {status}</p>
+                <p><b>Frame shape:</b> {frame_info}</p>
+                <hr>
+                <p><a href="/?action=stream" style="color: #00ff88;">📹 MJPEG Stream</a></p>
+                <p><a href="/?action=snapshot" style="color: #00ff88;">📷 Snapshot</a></p>
+                <hr>
+                <p style="color: #888;">Frames are provided by main.py camera loop</p>
+            </body>
+            </html>
+            """
+            self.wfile.write(html.encode())
+            return
+        
+        # Handle snapshot request
+        if 'action=snapshot' in self.path:
+            with _frame_lock:
+                frame = _current_frame.copy() if _current_frame is not None else None
+            
+            if frame is not None and CV2_AVAILABLE:
+                try:
+                    ret, jpg = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
+                    if ret:
+                        jpg_bytes = jpg.tobytes()
+                        self.send_response(200)
+                        self.send_header('Content-type', 'image/jpeg')
+                        self.send_header('Content-length', len(jpg_bytes))
+                        self.send_header('Access-Control-Allow-Origin', '*')
+                        self.end_headers()
+                        self.wfile.write(jpg_bytes)
+                    else:
+                        self.send_error(500, 'Failed to encode image')
+                except Exception as e:
+                    logger.error(f'Snapshot error: {e}')
+                    self.send_error(500, str(e))
+            else:
+                self.send_error(503, 'No frame available')
+            return
+        
+        # Handle MJPEG stream request
+        if 'action=stream' in self.path or self.path == '/stream':
+            self.send_response(200)
+            self.send_header('Content-type', 'multipart/x-mixed-replace; boundary=--frame')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
+            self.end_headers()
+            
+            logger.info(f'Camera stream started for {self.client_address[0]}')
+            
+            while True:
+                try:
+                    with _frame_lock:
+                        frame = _current_frame.copy() if _current_frame is not None else None
+                    
+                    if frame is not None and CV2_AVAILABLE:
+                        ret, jpg = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+                        if ret:
+                            jpg_bytes = jpg.tobytes()
+                            self.wfile.write(b'--frame\r\n')
+                            self.wfile.write(b'Content-Type: image/jpeg\r\n')
+                            self.wfile.write(f'Content-Length: {len(jpg_bytes)}\r\n\r\n'.encode())
+                            self.wfile.write(jpg_bytes)
+                            self.wfile.write(b'\r\n')
+                            self.wfile.flush()
+                    
+                    # ~30 FPS
+                    time.sleep(0.033)
+                    
+                except (ConnectionResetError, BrokenPipeError, OSError):
+                    logger.info(f'Camera stream ended for {self.client_address[0]}')
+                    break
+                except Exception as e:
+                    logger.error(f'Stream error: {e}')
+                    break
+            return
+        
+        # Default: redirect to status page
+        self.send_response(302)
+        self.send_header('Location', '/')
+        self.end_headers()
+
+
+class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
+    """Handle requests in separate threads."""
+    daemon_threads = True
+    allow_reuse_address = True
 
 
 class RobotClient:
@@ -63,7 +227,9 @@ class RobotClient:
         mqtt_port: int = 1883,
         robot_id: str = None,
         auto_telemetry: bool = True,
-        telemetry_interval: float = 5.0
+        telemetry_interval: float = 5.0,
+        camera_port: int = 8081,
+        enable_camera_stream: bool = True
     ):
         """
         Initialize the Robot Client.
@@ -74,6 +240,8 @@ class RobotClient:
             robot_id: Robot identifier (auto-generated if not provided)
             auto_telemetry: If True, automatically sends status/battery on interval
             telemetry_interval: Interval in seconds for auto telemetry
+            camera_port: HTTP port for MJPEG camera stream (default: 8081)
+            enable_camera_stream: If True, starts camera streaming server
         """
         if not MQTT_AVAILABLE:
             raise ImportError("paho-mqtt is required. Install with: pip install paho-mqtt")
@@ -82,6 +250,8 @@ class RobotClient:
         self.mqtt_port = mqtt_port
         self.auto_telemetry = auto_telemetry
         self.telemetry_interval = telemetry_interval
+        self.camera_port = camera_port
+        self.enable_camera_stream = enable_camera_stream
         
         # Generate robot ID from hostname
         if robot_id:
@@ -103,6 +273,11 @@ class RobotClient:
         self._last_battery_voltage = 12.6
         self.location = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.status = "online"
+        
+        # Camera streaming
+        self._camera_server = None
+        self._camera_thread = None
+        self._ip_address = self._get_local_ip()
         
         # MQTT Topics
         self.topics = {
@@ -131,9 +306,12 @@ class RobotClient:
         self._last_battery_time = 0
         
         logger.info(f"RobotClient initialized: {self.robot_id}")
+        logger.info(f"Camera stream will be available at: http://{self._ip_address}:{camera_port}/?action=stream")
     
     def _detect_hardware(self) -> bool:
         """Detect if running on TonyPi hardware."""
+        if HARDWARE_SDK_AVAILABLE:
+            return True
         try:
             # Check for Raspberry Pi
             if os.path.exists('/proc/device-tree/model'):
@@ -182,6 +360,9 @@ class RobotClient:
     
     def _telemetry_loop(self):
         """Background thread for auto telemetry."""
+        last_servo_time = 0
+        last_imu_time = 0
+        
         while self.running:
             try:
                 current_time = time.time()
@@ -195,10 +376,161 @@ class RobotClient:
                     if current_time - self._last_battery_time >= 30:
                         self.send_battery()
                         self._last_battery_time = current_time
+                    
+                    # Send servo data every 3 seconds
+                    if current_time - last_servo_time >= 3:
+                        servo_data = self.read_servo_data()
+                        self.send_servo_data(servo_data)
+                        last_servo_time = current_time
+                    
+                    # Send IMU data every 2 seconds
+                    if current_time - last_imu_time >= 2:
+                        imu_data = self.read_imu_data()
+                        self.send_sensor_data(imu_data)
+                        last_imu_time = current_time
                 
                 time.sleep(0.5)
             except Exception as e:
                 logger.error(f"Telemetry loop error: {e}")
+    
+    # ==========================================
+    # HARDWARE READING METHODS
+    # ==========================================
+    
+    def read_imu_data(self) -> Dict[str, float]:
+        """
+        Read IMU sensor data (accelerometer and gyroscope).
+        Returns real data if hardware available, otherwise simulated.
+        """
+        if HARDWARE_SDK_AVAILABLE and board:
+            try:
+                imu = board.get_imu()
+                if imu:
+                    return {
+                        "accelerometer_x": round(imu[0], 3),
+                        "accelerometer_y": round(imu[1], 3),
+                        "accelerometer_z": round(imu[2], 3),
+                        "gyroscope_x": round(imu[3], 2),
+                        "gyroscope_y": round(imu[4], 2),
+                        "gyroscope_z": round(imu[5], 2),
+                        "cpu_temperature": self._get_cpu_temperature()
+                    }
+            except Exception as e:
+                logger.error(f"Error reading IMU: {e}")
+        
+        # Simulation mode - generate realistic sensor data
+        return {
+            "accelerometer_x": round(random.uniform(-0.5, 0.5), 3),
+            "accelerometer_y": round(random.uniform(-0.5, 0.5), 3),
+            "accelerometer_z": round(random.uniform(9.5, 10.0), 3),
+            "gyroscope_x": round(random.uniform(-10, 10), 2),
+            "gyroscope_y": round(random.uniform(-10, 10), 2),
+            "gyroscope_z": round(random.uniform(-10, 10), 2),
+            "cpu_temperature": self._get_cpu_temperature()
+        }
+    
+    def read_servo_data(self) -> Dict[str, Any]:
+        """
+        Read servo status data (position, temperature, voltage).
+        Returns real data if hardware available, otherwise simulated.
+        """
+        servo_data = {}
+        servo_names = ["Left Hip", "Left Knee", "Right Hip", "Right Knee", "Head Pan", "Head Tilt"]
+        servo_count = 6  # TonyPi has 6 main bus servos
+        
+        if HARDWARE_SDK_AVAILABLE and controller:
+            for idx in range(1, servo_count + 1):
+                try:
+                    # Read servo data from hardware
+                    pos = controller.get_bus_servo_pulse(idx)
+                    temp = controller.get_bus_servo_temp(idx)
+                    vin = controller.get_bus_servo_vin(idx)
+                    
+                    # Convert pulse to degrees
+                    if pos is not None:
+                        angle = ((pos - 500) / 500) * 90
+                    else:
+                        angle = 0.0
+                    
+                    # Determine alert level based on temperature
+                    alert = "normal"
+                    if temp and temp > 70:
+                        alert = "critical"
+                    elif temp and temp > 60:
+                        alert = "warning"
+                    
+                    servo_data[f"servo_{idx}"] = {
+                        "id": idx,
+                        "name": servo_names[idx - 1] if idx <= len(servo_names) else f"Servo {idx}",
+                        "position": round(angle, 1),
+                        "temperature": temp if temp else 45.0,
+                        "voltage": (vin / 1000.0) if vin else 5.0,
+                        "torque_enabled": True,
+                        "alert_level": alert
+                    }
+                except Exception as e:
+                    logger.error(f"Error reading servo {idx}: {e}")
+                    servo_data[f"servo_{idx}"] = self._get_simulated_servo(idx, servo_names)
+        else:
+            # Simulation mode
+            for idx in range(1, servo_count + 1):
+                servo_data[f"servo_{idx}"] = self._get_simulated_servo(idx, servo_names)
+        
+        return servo_data
+    
+    def _get_simulated_servo(self, idx: int, servo_names: list) -> Dict[str, Any]:
+        """Generate simulated servo data."""
+        temp = round(random.uniform(40, 55), 1)
+        return {
+            "id": idx,
+            "name": servo_names[idx - 1] if idx <= len(servo_names) else f"Servo {idx}",
+            "position": round(random.uniform(-45, 45), 1),
+            "temperature": temp,
+            "voltage": round(random.uniform(4.8, 5.2), 2),
+            "torque_enabled": True,
+            "alert_level": "warning" if temp > 50 else "normal"
+        }
+    
+    def read_battery_voltage(self) -> tuple:
+        """
+        Read battery voltage and calculate percentage.
+        Returns (percentage, voltage).
+        """
+        if HARDWARE_SDK_AVAILABLE and board:
+            try:
+                voltage_mv = board.get_battery()
+                if voltage_mv:
+                    voltage_v = voltage_mv / 1000.0
+                    percentage = self._voltage_to_percentage(voltage_v)
+                    self.battery_level = max(0, min(100, percentage))
+                    self._last_battery_voltage = voltage_v
+                    return (self.battery_level, voltage_v)
+            except Exception as e:
+                logger.error(f"Error reading battery: {e}")
+        
+        return (self.battery_level, self._last_battery_voltage)
+    
+    def _voltage_to_percentage(self, voltage: float) -> float:
+        """Convert battery voltage to percentage (3S LiPo curve)."""
+        BATTERY_MIN_V = 9.0
+        BATTERY_MAX_V = 12.6
+        
+        voltage = max(BATTERY_MIN_V, min(BATTERY_MAX_V, voltage))
+        
+        breakpoints = [
+            (9.0, 0), (9.6, 5), (10.2, 15), (10.5, 25),
+            (10.8, 40), (11.1, 50), (11.4, 65), (11.7, 80),
+            (12.0, 90), (12.3, 95), (12.6, 100),
+        ]
+        
+        for i in range(len(breakpoints) - 1):
+            v1, p1 = breakpoints[i]
+            v2, p2 = breakpoints[i + 1]
+            if v1 <= voltage <= v2:
+                ratio = (voltage - v1) / (v2 - v1)
+                return p1 + ratio * (p2 - p1)
+        
+        return 0 if voltage < BATTERY_MIN_V else 100
     
     # ==========================================
     # PUBLIC API
@@ -206,13 +538,19 @@ class RobotClient:
     
     def start(self) -> bool:
         """
-        Start the robot client (connects to MQTT in background).
+        Start the robot client (connects to MQTT + starts camera server).
         
         Returns:
-            True if connection initiated successfully
+            True if started successfully
         """
         try:
             self.running = True
+            
+            # Start camera streaming server
+            if self.enable_camera_stream:
+                self._start_camera_server()
+            
+            # Connect to MQTT
             self.client.connect(self.mqtt_broker, self.mqtt_port, 60)
             self.client.loop_start()
             
@@ -226,10 +564,13 @@ class RobotClient:
                 # Start background telemetry thread
                 self._telemetry_thread = threading.Thread(target=self._telemetry_loop, daemon=True)
                 self._telemetry_thread.start()
-                logger.info("Robot client started")
+                logger.info("Robot client started (MQTT + Camera)")
                 return True
             else:
-                logger.warning("MQTT connection timeout - running without monitoring")
+                logger.warning("MQTT connection timeout - camera still running")
+                # Still start telemetry for camera even without MQTT
+                self._telemetry_thread = threading.Thread(target=self._telemetry_loop, daemon=True)
+                self._telemetry_thread.start()
                 return False
                 
         except Exception as e:
@@ -237,7 +578,7 @@ class RobotClient:
             return False
     
     def stop(self):
-        """Stop the robot client and disconnect."""
+        """Stop the robot client, camera server, and disconnect MQTT."""
         self.running = False
         self.status = "offline"
         
@@ -245,9 +586,60 @@ class RobotClient:
             self.send_status()
             time.sleep(0.5)
         
+        # Stop camera server
+        self._stop_camera_server()
+        
         self.client.loop_stop()
         self.client.disconnect()
         logger.info("Robot client stopped")
+    
+    def _start_camera_server(self):
+        """Start the MJPEG camera streaming server."""
+        try:
+            self._camera_server = ThreadedHTTPServer(('', self.camera_port), MJPEGHandler)
+            self._camera_thread = threading.Thread(target=self._camera_server.serve_forever, daemon=True)
+            self._camera_thread.start()
+            logger.info(f"📹 Camera stream started: http://{self._ip_address}:{self.camera_port}/?action=stream")
+        except OSError as e:
+            if e.errno == 98 or e.errno == 10048:  # Address already in use (Linux/Windows)
+                logger.warning(f"Camera port {self.camera_port} already in use - stream not available")
+            else:
+                logger.error(f"Failed to start camera server: {e}")
+        except Exception as e:
+            logger.error(f"Failed to start camera server: {e}")
+    
+    def _stop_camera_server(self):
+        """Stop the camera streaming server."""
+        if self._camera_server:
+            try:
+                self._camera_server.shutdown()
+                logger.info("Camera server stopped")
+            except Exception as e:
+                logger.error(f"Error stopping camera server: {e}")
+    
+    def update_frame(self, frame):
+        """
+        Update the current camera frame for streaming.
+        Call this from main.py's camera loop.
+        
+        Args:
+            frame: OpenCV frame (numpy array) from camera
+        """
+        global _current_frame, _frame_lock
+        
+        if frame is not None:
+            with _frame_lock:
+                _current_frame = frame.copy() if hasattr(frame, 'copy') else frame
+    
+    @property
+    def camera_url(self) -> str:
+        """Get the camera stream URL."""
+        return f"http://{self._ip_address}:{self.camera_port}/?action=stream"
+    
+    @property  
+    def snapshot_url(self) -> str:
+        """Get the camera snapshot URL."""
+        return f"http://{self._ip_address}:{self.camera_port}/?action=snapshot"
     
     def set_command_callback(self, callback: Callable):
         """
@@ -352,7 +744,6 @@ class RobotClient:
         
         try:
             system_info = self._get_system_info()
-            ip_address = self._get_local_ip()
             
             data = {
                 "robot_id": self.robot_id,
@@ -360,8 +751,9 @@ class RobotClient:
                 "timestamp": datetime.now().isoformat(),
                 "system_info": system_info,
                 "hardware_available": self.hardware_available,
-                "ip_address": ip_address,
-                "camera_url": f"http://{ip_address}:8081/?action=stream"
+                "ip_address": self._ip_address,
+                "camera_url": self.camera_url,
+                "snapshot_url": self.snapshot_url
             }
             
             if custom_data:
@@ -377,17 +769,20 @@ class RobotClient:
         Send battery status.
         
         Args:
-            percentage: Battery percentage (0-100)
-            voltage: Battery voltage in volts
+            percentage: Battery percentage (0-100), reads from hardware if None
+            voltage: Battery voltage in volts, reads from hardware if None
         """
         if not self.is_connected:
             return
         
         try:
-            if percentage is None:
-                percentage = self.battery_level
-            if voltage is None:
-                voltage = self._last_battery_voltage
+            # Read from hardware if not provided
+            if percentage is None or voltage is None:
+                hw_percent, hw_voltage = self.read_battery_voltage()
+                if percentage is None:
+                    percentage = hw_percent
+                if voltage is None:
+                    voltage = hw_voltage
             
             data = {
                 "robot_id": self.robot_id,
@@ -398,6 +793,7 @@ class RobotClient:
             }
             
             self.client.publish(self.topics["battery"], json.dumps(data))
+            logger.debug(f"Battery sent: {percentage:.1f}% ({voltage:.2f}V)")
             
         except Exception as e:
             logger.error(f"Error sending battery: {e}")

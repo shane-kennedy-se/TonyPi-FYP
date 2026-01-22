@@ -23,6 +23,7 @@ FRAME_HEIGHT = 480
 MQTT_BROKER = os.getenv("MQTT_BROKER", "localhost")
 MQTT_PORT = int(os.getenv("MQTT_PORT", 1883))
 TELEMETRY_ENABLED = os.getenv("TELEMETRY_ENABLED", "true").lower() == "true"
+CAMERA_STREAM_PORT = int(os.getenv("CAMERA_PORT", 8081))
 
 # ROBOT STATES
 STATE_IDLE = "IDLE"           
@@ -75,22 +76,27 @@ def main():
     # Initialize Ultrasonic Sensor for obstacle detection
     ultrasonic = ultrasonic_sensor.UltrasonicSensor()
     
-    # Initialize Robot Client for telemetry (MQTT monitoring)
+    # Initialize Robot Client for telemetry (MQTT monitoring + Camera streaming)
     robot_client = None
     if TELEMETRY_ENABLED:
         print(f"📡 Connecting to monitoring system at {MQTT_BROKER}:{MQTT_PORT}...")
+        print(f"📹 Camera stream will be on port {CAMERA_STREAM_PORT}")
         try:
             robot_client = RobotClient(
                 mqtt_broker=MQTT_BROKER,
                 mqtt_port=MQTT_PORT,
                 auto_telemetry=True,
-                telemetry_interval=10.0
+                telemetry_interval=10.0,
+                camera_port=CAMERA_STREAM_PORT,
+                enable_camera_stream=True
             )
             if robot_client.start():
                 print("✅ Connected to monitoring system")
+                print(f"📹 Camera stream: {robot_client.camera_url}")
                 robot_client.send_log("INFO", "Main controller started", "main")
             else:
-                print("⚠️ Monitoring system unavailable - running offline")
+                print("⚠️ MQTT unavailable - camera stream still running")
+                print(f"📹 Camera stream: {robot_client.camera_url}")
         except Exception as e:
             print(f"⚠️ Could not connect to monitoring: {e}")
             robot_client = None
@@ -355,6 +361,10 @@ def main():
                 robot_client.send_sensor_data(sensor_data)
                 last_sensor_send = current_time
 
+            # Send frame to robot client for streaming (with all overlays)
+            if robot_client:
+                robot_client.update_frame(frame)
+            
             cv2.imshow("TonyPi", frame)
             if cv2.waitKey(1) & 0xFF == ord('q'): break
 
