@@ -154,7 +154,7 @@ class RobotActions:
 
             # Pick up the object
             print("Picking up object...")
-            AGC.runActionGroup("PickUp")
+            AGC.runActionGroup("PickUpDiecut2")
             time.sleep(0.5)
 
             # Scan for QR code to determine destination
@@ -248,7 +248,7 @@ class RobotActions:
             
             # Put down the object
             print("Placing object down...")
-            AGC.runActionGroup("PutDown")
+            AGC.runActionGroup("PutDown1")
 
             print("=== Task Complete ===")
             return True
