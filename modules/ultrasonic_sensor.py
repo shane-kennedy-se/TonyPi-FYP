@@ -62,19 +62,18 @@ class UltrasonicSensor:
             time.sleep(0.00005)  # 50 microseconds stabilization delay
             
             # Wait for echo start with timeout (max 50ms = ~8.5m range)
-            start_time = time.time()
             timeout = 0.05
+            timeout_start = time.time()
             while lgpio.gpio_read(self.h, self.echo_pin) == 0:
-                if time.time() - start_time > timeout:
+                if time.time() - timeout_start > timeout:
                     return None  # Timeout, no echo received
-                start_time = time.time()
+            start_time = time.time()  # Capture when echo goes HIGH
             
             # Wait for echo end with timeout
-            stop_time = time.time()
             while lgpio.gpio_read(self.h, self.echo_pin) == 1:
-                if time.time() - stop_time > timeout:
+                if time.time() - start_time > timeout:
                     return None  # Timeout, echo didn't end properly
-                stop_time = time.time()
+            stop_time = time.time()  # Capture when echo goes LOW
             
             time_elapsed = stop_time - start_time
             distance = (time_elapsed * 34300) / 2
