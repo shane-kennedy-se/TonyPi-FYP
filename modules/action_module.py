@@ -122,70 +122,139 @@ class RobotActions:
             print(f"[ERROR] Label Insertion failed: {e}")
             return False
 
-    def run_transport_box(self, steps=5, use_qr=False):
-        """Execute transport box sequence with optional QR code navigation
-        
-        Args:
-            steps (int): Number of steps to walk forward (used if use_qr=False)
-            use_qr (bool): Use QR code scanning and navigation if True
-        """
-        mode_str = "QR Navigation" if use_qr else f"Fixed Steps ({steps})"
-        print(f"=== TonyPi Pro: Transport Box Sequence - {mode_str} ===")
+    def run_transport_cardboard(self):
+        """Execute transport cardboard sequence with QR code navigation"""
+        print("=== TonyPi Pro: Transport Cardboard Sequence ===")
         time.sleep(2)
 
         try:
-            # Step 1: Pick up the object
-            print("Step 1: Picking up object...")
+            # Import QR scanner for station detection
+            try:
+                import cv2
+                from pyzbar import pyzbar
+                from hiwonder import Controller, ros_robot_controller_sdk as rrc
+            except ImportError as e:
+                print(f"[ERROR] Required modules not available: {e}")
+                return False
+
+            # Setup camera and head servo control
+            rrc_board = rrc.Board()
+            ctl = Controller.Controller(rrc_board)
+            cap = cv2.VideoCapture(0)
+            
+            HEAD_PAN_SERVO = 2
+            HEAD_TILT_SERVO = 1
+            PAN_CENTER = 1450
+            TILT_CENTER = 1150
+            
+            # Center head for scanning
+            ctl.set_pwm_servo_pulse(HEAD_TILT_SERVO, TILT_CENTER, 100)
+            ctl.set_pwm_servo_pulse(HEAD_PAN_SERVO, PAN_CENTER, 100)
+            time.sleep(0.5)
+
+            # Pick up the object
+            print("Picking up object...")
             AGC.runActionGroup("PickUp")
             time.sleep(0.5)
 
-            if use_qr:
-                # Step 2: Scan for QR code and navigate
-                print("Step 2: Scanning for QR code...")
-                try:
-                    from qr_navigate import start_qr_navigation_async, get_navigation_result
+            # Scan for QR code to determine destination
+            print("Scanning for destination QR code...")
+            destination = None
+            scan_timeout = time.time() + 30  # 30 second timeout for initial scan
+            
+            # Head scanning variables
+            x_dis = PAN_CENTER
+            d_x = 20
+            SERVO_PAN_MIN = 1000
+            SERVO_PAN_MAX = 1900
+            
+            while destination is None and time.time() < scan_timeout:
+                ret, frame = cap.read()
+                if not ret:
+                    continue
+                
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                barcodes = pyzbar.decode(frame_rgb)
+                
+                if barcodes:
+                    barcode = barcodes[0]
+                    destination = barcode.data.decode("utf-8")
+                    print(f"Destination detected: {destination}")
+                    break
+                else:
+                    # Scan head left-right to find QR
+                    x_dis += d_x
+                    if x_dis >= SERVO_PAN_MAX or x_dis <= SERVO_PAN_MIN:
+                        d_x = -d_x
+                    ctl.set_pwm_servo_pulse(HEAD_PAN_SERVO, x_dis, 20)
+                
+                time.sleep(0.02)
+            
+            if destination is None:
+                print("[WARNING] No QR code found, cannot determine destination")
+                cap.release()
+                return False
+            
+            # Center head for navigation
+            ctl.set_pwm_servo_pulse(HEAD_PAN_SERVO, PAN_CENTER, 100)
+            time.sleep(0.3)
+            
+            # Navigate to destination by tracking QR and walking
+            print(f"Navigating to destination: {destination}")
+            nav_timeout = time.time() + 60
+            TARGET_WIDTH = 145  # Width threshold indicating arrival
+            
+            while time.time() < nav_timeout:
+                ret, frame = cap.read()
+                if not ret:
+                    continue
+                
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                barcodes = pyzbar.decode(frame_rgb)
+                
+                if barcodes:
+                    barcode = barcodes[0]
+                    (x, y, w, h) = barcode.rect
+                    center_x = x + (w // 2)
+                    qr_width = w
                     
-                    start_qr_navigation_async(timeout=60)
+                    # Check if we've arrived (QR is large enough)
+                    if qr_width >= TARGET_WIDTH:
+                        print(f"Arrived at destination: {destination}")
+                        break
                     
-                    # Wait for navigation to complete
-                    print("Step 3: Navigating to QR code...")
-                    result = get_navigation_result()
-                    timeout = time.time() + 60
-                    while result is None and time.time() < timeout:
-                        time.sleep(0.5)
-                        result = get_navigation_result()
-                    
-                    if result:
-                        print(f"Reached destination: {result}")
+                    # Align with QR position
+                    if center_x < 240:
+                        print("Turning left...")
+                        AGC.runActionGroup("turn_left")
+                    elif center_x > 400:
+                        print("Turning right...")
+                        AGC.runActionGroup("turn_right")
                     else:
-                        print("[WARNING] QR navigation timeout, falling back to walking")
-                        for i in range(steps):
-                            print(f"  Walking step {i+1}/{steps}...")
-                            AGC.runActionGroup("WalkOneStep")
-                            time.sleep(0.5)
-                except ImportError:
-                    print("[ERROR] QR navigation module not available, using fixed steps instead")
-                    for i in range(steps):
-                        print(f"  Walking step {i+1}/{steps}...")
-                        AGC.runActionGroup("WalkOneStep")
-                        time.sleep(0.5)
-            else:
-                # Step 2: Walk forward (fixed steps)
-                print("Step 2: Walking forward...")
-                for i in range(steps):
-                    print(f"  Walking step {i+1}/{steps}...")
-                    AGC.runActionGroup("WalkOneStep")
-                    time.sleep(0.5)
-
-            # Final Step: Put down the object
-            print("Step 3: Placing object down...")
+                        # Walk forward using WalkOneStep1
+                        print("Walking forward...")
+                        AGC.runActionGroup("WalkOneStep1")
+                    
+                    time.sleep(0.3)
+                else:
+                    # QR lost, try scanning
+                    x_dis += d_x
+                    if x_dis >= SERVO_PAN_MAX or x_dis <= SERVO_PAN_MIN:
+                        d_x = -d_x
+                    ctl.set_pwm_servo_pulse(HEAD_PAN_SERVO, x_dis, 20)
+                    time.sleep(0.05)
+            
+            cap.release()
+            
+            # Put down the object
+            print("Placing object down...")
             AGC.runActionGroup("PutDown")
 
             print("=== Task Complete ===")
             return True
 
         except Exception as e:
-            print(f"[ERROR] Transport Box failed: {e}")
+            print(f"[ERROR] Transport Cardboard failed: {e}")
             return False
 
     def run_sheet_flip_over(self):
@@ -227,56 +296,4 @@ class RobotActions:
 
         except Exception as e:
             print(f"[ERROR] Sheet Flip Over failed: {e}")
-            return False
-
-    def run_pick_up_cardboard(self):
-        """Execute pick up cardboard sequence"""
-        print("=== TonyPi Pro: Pick Up Cardboard Sequence ===")
-        time.sleep(2)
-
-        try:
-            # Step 1: Approach and grab
-            print("Step 1: Approaching and grabbing cardboard...")
-            AGC.runActionGroup("PickUp")
-            time.sleep(1)
-
-            print("=== Task Complete ===")
-            return True
-
-        except Exception as e:
-            print(f"[ERROR] Pick Up Cardboard failed: {e}")
-            return False
-
-    def run_transport_cardboard(self, steps=5):
-        """Execute transport cardboard sequence
-        
-        Args:
-            steps (int): Number of steps to walk forward
-        """
-        print(f"=== TonyPi Pro: Transport Cardboard Sequence ({steps} steps) ===")
-        time.sleep(2)
-
-        try:
-            # Step 1: Pick up the cardboard
-            print("Step 1: Picking up cardboard...")
-            AGC.runActionGroup("PickUp")
-            time.sleep(0.5)
-
-            # Step 2: Walk forward
-            print("Step 2: Walking forward...")
-            for i in range(steps):
-                print(f"  Walking step {i+1}/{steps}...")
-                AGC.runActionGroup("WalkOneStep")
-                time.sleep(0.5)
-
-            # Step 3: Put down the cardboard
-            print("Step 3: Placing cardboard down...")
-            AGC.runActionGroup("PutDown")
-            time.sleep(1)
-
-            print("=== Task Complete ===")
-            return True
-
-        except Exception as e:
-            print(f"[ERROR] Transport Cardboard failed: {e}")
             return False
