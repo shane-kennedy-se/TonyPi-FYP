@@ -294,6 +294,11 @@ class RobotClient:
         
         # Callbacks
         self.on_command_callback: Optional[Callable] = None
+        self.on_emergency_stop_callback: Optional[Callable] = None
+        
+        # Emergency stop state
+        self._emergency_stop_triggered = False
+        self._emergency_stop_reason = None
         
         # Setup MQTT callbacks
         self.client.on_connect = self._on_connect
@@ -335,6 +340,11 @@ class RobotClient:
             client.subscribe(self.topics["commands"])
             client.subscribe("tonypi/commands/broadcast")
             
+            # Subscribe to emergency stop topics
+            client.subscribe(f"tonypi/emergency_stop/{self.robot_id}")
+            client.subscribe("tonypi/emergency_stop/broadcast")
+            logger.info(f"Subscribed to emergency stop topics")
+            
             # Send initial status
             self.send_status()
         else:
@@ -350,13 +360,162 @@ class RobotClient:
         """Handle incoming MQTT messages."""
         try:
             payload = json.loads(msg.payload.decode())
-            logger.info(f"Command received: {payload.get('type')}")
+            command_type = payload.get('type', '')
+            logger.info(f"Command received on {msg.topic}: {command_type}")
             
+            # ==========================================
+            # 🚨 EMERGENCY STOP HANDLING
+            # ==========================================
+            if 'emergency_stop' in msg.topic or command_type == 'emergency_stop':
+                self._handle_emergency_stop(payload)
+                return
+            
+            # Handle resume command (to clear emergency stop)
+            if command_type == 'resume' or command_type == 'clear_emergency':
+                self._handle_resume(payload)
+                return
+            
+            # Pass to general command callback
             if self.on_command_callback:
                 self.on_command_callback(msg.topic, payload)
                 
         except Exception as e:
             logger.error(f"Message handling error: {e}")
+    
+    def _handle_emergency_stop(self, payload: Dict[str, Any]):
+        """
+        Handle emergency stop command from monitoring system.
+        
+        Args:
+            payload: Command payload with optional 'reason' field
+        """
+        reason = payload.get('reason', 'Emergency stop triggered from monitoring system')
+        command_id = payload.get('id', 'unknown')
+        
+        logger.warning(f"🚨 EMERGENCY STOP RECEIVED: {reason}")
+        
+        # Set emergency stop state
+        self._emergency_stop_triggered = True
+        self._emergency_stop_reason = reason
+        self.status = "emergency_stopped"
+        
+        # Stop any hardware actions if SDK available
+        if HARDWARE_SDK_AVAILABLE:
+            try:
+                from hiwonder.ActionGroupControl import stopActionGroup
+                stopActionGroup()
+                logger.info("Hardware actions stopped")
+            except Exception as e:
+                logger.error(f"Error stopping hardware actions: {e}")
+        
+        # Call the emergency stop callback if registered
+        if self.on_emergency_stop_callback:
+            try:
+                self.on_emergency_stop_callback(reason)
+            except Exception as e:
+                logger.error(f"Error in emergency stop callback: {e}")
+        
+        # Send acknowledgement
+        self.send_log("CRITICAL", f"EMERGENCY STOP: {reason}", "emergency")
+        
+        # Send response to confirm stop
+        response = {
+            "robot_id": self.robot_id,
+            "command_id": command_id,
+            "timestamp": datetime.now().isoformat(),
+            "type": "emergency_stop_ack",
+            "success": True,
+            "message": "Emergency stop executed",
+            "reason": reason
+        }
+        self.client.publish(self.topics["response"], json.dumps(response))
+        
+        # Send job cancellation event if there's an active job
+        self.send_job_event(
+            task_name="current_task",
+            status="cancelled",
+            phase="emergency_stopped",
+            reason=reason
+        )
+        
+        # Update status
+        self.send_status({"emergency_stop": True, "emergency_reason": reason})
+    
+    def _handle_resume(self, payload: Dict[str, Any]):
+        """
+        Handle resume command to clear emergency stop state.
+        
+        Args:
+            payload: Command payload
+        """
+        command_id = payload.get('id', 'unknown')
+        
+        if self._emergency_stop_triggered:
+            logger.info("✅ Emergency stop cleared - resuming normal operation")
+            self._emergency_stop_triggered = False
+            self._emergency_stop_reason = None
+            self.status = "online"
+            
+            self.send_log("INFO", "Emergency stop cleared - system ready", "emergency")
+            
+            # Send response
+            response = {
+                "robot_id": self.robot_id,
+                "command_id": command_id,
+                "timestamp": datetime.now().isoformat(),
+                "type": "resume_ack",
+                "success": True,
+                "message": "System resumed from emergency stop"
+            }
+            self.client.publish(self.topics["response"], json.dumps(response))
+            
+            self.send_status()
+        else:
+            logger.info("Resume command received but no emergency stop was active")
+    
+    def set_emergency_stop_callback(self, callback: Callable[[str], None]):
+        """
+        Set callback function for emergency stop events.
+        
+        The callback will be called when an emergency stop command is received.
+        Use this to stop your robot's current actions.
+        
+        Args:
+            callback: Function that takes a reason string as argument
+                      Example: def on_emergency_stop(reason: str): ...
+        """
+        self.on_emergency_stop_callback = callback
+        logger.info("Emergency stop callback registered")
+    
+    def is_emergency_stopped(self) -> bool:
+        """
+        Check if emergency stop is currently active.
+        
+        Returns:
+            True if emergency stop is active
+        """
+        return self._emergency_stop_triggered
+    
+    def get_emergency_stop_reason(self) -> Optional[str]:
+        """
+        Get the reason for the current emergency stop.
+        
+        Returns:
+            Reason string if emergency stop is active, None otherwise
+        """
+        return self._emergency_stop_reason if self._emergency_stop_triggered else None
+    
+    def clear_emergency_stop(self):
+        """
+        Clear the emergency stop state locally.
+        Call this after handling the emergency stop in your main code.
+        """
+        if self._emergency_stop_triggered:
+            logger.info("Emergency stop cleared locally")
+            self._emergency_stop_triggered = False
+            self._emergency_stop_reason = None
+            self.status = "online"
+            self.send_status()
     
     def _telemetry_loop(self):
         """Background thread for auto telemetry."""
@@ -495,18 +654,49 @@ class RobotClient:
         """
         Read battery voltage and calculate percentage.
         Returns (percentage, voltage).
+        
+        TonyPi uses a 3S LiPo battery:
+        - Full charge: 12.6V (4.2V per cell)
+        - Nominal: 11.1V (3.7V per cell)
+        - Empty (safe cutoff): 9.0V (3.0V per cell)
         """
         if HARDWARE_SDK_AVAILABLE and board:
             try:
                 voltage_mv = board.get_battery()
-                if voltage_mv:
+                logger.debug(f"Raw battery reading: {voltage_mv} mV")
+                
+                if voltage_mv is not None and voltage_mv > 0:
                     voltage_v = voltage_mv / 1000.0
+                    
+                    # Sanity check: 3S LiPo should be between 9V and 13V
+                    if voltage_v < 5.0:
+                        # Might be reading per-cell voltage, multiply by 3
+                        logger.warning(f"Battery voltage too low ({voltage_v}V), assuming per-cell reading")
+                        voltage_v = voltage_v * 3
+                    elif voltage_v > 15.0:
+                        # Invalid reading
+                        logger.warning(f"Battery voltage too high ({voltage_v}V), using fallback")
+                        return (self.battery_level, self._last_battery_voltage)
+                    
                     percentage = self._voltage_to_percentage(voltage_v)
                     self.battery_level = max(0, min(100, percentage))
                     self._last_battery_voltage = voltage_v
+                    
+                    logger.debug(f"Battery: {voltage_v:.2f}V = {percentage:.1f}%")
                     return (self.battery_level, voltage_v)
+                else:
+                    logger.warning(f"Invalid battery reading: {voltage_mv}")
             except Exception as e:
                 logger.error(f"Error reading battery: {e}")
+        else:
+            logger.debug(f"Battery hardware not available (SDK={HARDWARE_SDK_AVAILABLE}, board={board is not None})")
+        
+        # Simulation mode or fallback - slowly decrease battery
+        if not HARDWARE_SDK_AVAILABLE:
+            # Simulate gradual battery drain for testing
+            self.battery_level = max(0, self.battery_level - 0.01)
+            # Estimate voltage from percentage for simulation
+            self._last_battery_voltage = 9.0 + (self.battery_level / 100.0) * 3.6
         
         return (self.battery_level, self._last_battery_voltage)
     
@@ -872,6 +1062,70 @@ class RobotClient:
             
         except Exception as e:
             logger.error(f"Error sending log: {e}")
+    
+    def send_job_event(
+        self,
+        task_name: str,
+        status: str,
+        phase: str = None,
+        elapsed_time: float = None,
+        estimated_duration: float = None,
+        action_duration: float = None,
+        success: bool = None,
+        reason: str = None
+    ):
+        """
+        Send job timing event to monitoring system.
+        
+        Args:
+            task_name: Name of the task (e.g., "Peeling", "Transport")
+            status: Job status ("started", "in_progress", "completed", "cancelled", "failed")
+            phase: Current phase ("scanning", "searching", "executing", "done")
+            elapsed_time: Time elapsed since job started (seconds)
+            estimated_duration: Estimated total duration for this task type (seconds)
+            action_duration: Duration of the physical action execution (seconds)
+            success: Whether the job completed successfully
+            reason: Reason for cancellation/failure (if applicable)
+        """
+        if not self.is_connected:
+            return
+        
+        try:
+            data = {
+                "robot_id": self.robot_id,
+                "timestamp": datetime.now().isoformat(),
+                "task_name": task_name,
+                "status": status,
+                "phase": phase
+            }
+            
+            if elapsed_time is not None:
+                data["elapsed_time"] = round(elapsed_time, 2)
+            
+            if estimated_duration is not None:
+                data["estimated_duration"] = estimated_duration
+                # Calculate progress percentage
+                if elapsed_time is not None and estimated_duration > 0:
+                    progress = min(100, (elapsed_time / estimated_duration) * 100)
+                    data["progress_percent"] = round(progress, 1)
+            
+            if action_duration is not None:
+                data["action_duration"] = round(action_duration, 2)
+            
+            if success is not None:
+                data["success"] = success
+            
+            if reason is not None:
+                data["reason"] = reason
+            
+            # Publish to job topic
+            job_topic = f"tonypi/job/{self.robot_id}"
+            self.client.publish(job_topic, json.dumps(data))
+            
+            logger.info(f"Job event: {task_name} - {status} ({phase})")
+            
+        except Exception as e:
+            logger.error(f"Error sending job event: {e}")
     
     def send_command_response(self, command_id: str, success: bool, message: str, data: Dict = None):
         """

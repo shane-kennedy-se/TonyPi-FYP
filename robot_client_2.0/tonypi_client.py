@@ -540,14 +540,39 @@ class TonyPiRobotClient:
         if self.hardware_available and board:
             try:
                 voltage_mv = board.get_battery()
-                if voltage_mv:
+                logger.debug(f"Raw battery reading: {voltage_mv} mV")
+                
+                if voltage_mv is not None and voltage_mv > 0:
                     voltage_v = voltage_mv / 1000.0
+                    
+                    # Sanity check: 3S LiPo should be between 9V and 13V
+                    if voltage_v < 5.0:
+                        # Might be reading per-cell voltage, multiply by 3
+                        logger.warning(f"Battery voltage too low ({voltage_v}V), assuming per-cell reading")
+                        voltage_v = voltage_v * 3
+                    elif voltage_v > 15.0:
+                        # Invalid reading, use last known value
+                        logger.warning(f"Battery voltage too high ({voltage_v}V), using fallback")
+                        return self.battery_level
+                    
                     percentage = self._voltage_to_percentage(voltage_v)
                     self.battery_level = max(0, min(100, percentage))
                     self._last_battery_voltage = voltage_v  # Store for reporting
+                    
+                    logger.debug(f"Battery: {voltage_v:.2f}V = {percentage:.1f}%")
                     return self.battery_level
+                else:
+                    logger.warning(f"Invalid battery reading: {voltage_mv}")
             except Exception as e:
                 logger.error(f"Error reading battery: {e}")
+        else:
+            logger.debug(f"Battery hardware not available (hw={self.hardware_available}, board={board is not None})")
+        
+        # Simulation mode - slowly decrease battery for testing
+        if not self.hardware_available:
+            self.battery_level = max(0, self.battery_level - 0.01)
+            # Estimate voltage from percentage
+            self._last_battery_voltage = 9.0 + (self.battery_level / 100.0) * 3.6
         
         return self.battery_level
     

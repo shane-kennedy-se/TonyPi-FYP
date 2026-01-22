@@ -76,6 +76,34 @@ def main():
     # Initialize Ultrasonic Sensor for obstacle detection
     ultrasonic = ultrasonic_sensor.UltrasonicSensor()
     
+    # ==========================================
+    # 🚨 EMERGENCY STOP STATE
+    # ==========================================
+    emergency_stop_triggered = False
+    emergency_stop_reason = None
+    
+    def handle_emergency_stop(reason: str):
+        """Callback for emergency stop from monitoring system."""
+        nonlocal emergency_stop_triggered, emergency_stop_reason
+        nonlocal current_state, current_task, job_start_time, job_task_name, job_phase
+        
+        print(f"🚨🚨🚨 EMERGENCY STOP: {reason} 🚨🚨🚨")
+        emergency_stop_triggered = True
+        emergency_stop_reason = reason
+        
+        # Stop any current actions
+        if current_state != STATE_IDLE:
+            voice_module.speak("Emergency stop activated.")
+            current_state = STATE_IDLE
+            current_task = None
+            vision.reset()
+        
+        # Cancel any active job
+        if job_start_time is not None:
+            job_start_time = None
+            job_task_name = None
+            job_phase = None
+    
     # Initialize Robot Client for telemetry (MQTT monitoring + Camera streaming)
     robot_client = None
     if TELEMETRY_ENABLED:
@@ -94,6 +122,10 @@ def main():
                 print("✅ Connected to monitoring system")
                 print(f"📹 Camera stream: {robot_client.camera_url}")
                 robot_client.send_log("INFO", "Main controller started", "main")
+                
+                # Register emergency stop callback
+                robot_client.set_emergency_stop_callback(handle_emergency_stop)
+                print("🚨 Emergency stop handler registered")
             else:
                 print("⚠️ MQTT unavailable - camera stream still running")
                 print(f"📹 Camera stream: {robot_client.camera_url}")
@@ -124,6 +156,23 @@ def main():
     search_start_time = None  # Track when search started
     SEARCH_TIMEOUT = 60  # seconds - timeout if cardboard not found
     
+    # ==========================================
+    # 📊 JOB TIMING INTEGRATION
+    # ==========================================
+    job_start_time = None       # When current job started
+    job_task_name = None        # Name of current task
+    job_phase = None            # Current phase: "scanning", "searching", "executing"
+    
+    # Estimated durations for each task type (in seconds)
+    TASK_ESTIMATED_DURATIONS = {
+        "Peeling": 45,
+        "Insert Label": 30,
+        "Flip": 25,
+        "Transport": 40,
+        "Pick Up Cardboard": 35,
+        "Transport Cardboard": 50
+    }
+    
     # Telemetry timing
     last_sensor_send = 0
     SENSOR_SEND_INTERVAL = 2.0  # Send sensor data every 2 seconds
@@ -142,6 +191,59 @@ def main():
             with frame_lock: latest_frame = frame
 
             # ==========================================
+            # 🚨 EMERGENCY STOP CHECK (from monitoring system)
+            # ==========================================
+            if robot_client and robot_client.is_emergency_stopped():
+                # Check if we just entered emergency stop
+                if not emergency_stop_triggered:
+                    emergency_stop_triggered = True
+                    emergency_stop_reason = robot_client.get_emergency_stop_reason()
+                    print(f"🚨 EMERGENCY STOP ACTIVE: {emergency_stop_reason}")
+                    voice_module.speak("Emergency stop active.")
+                    
+                    # Cancel current job if any
+                    if job_start_time is not None:
+                        if robot_client:
+                            elapsed = time.time() - job_start_time
+                            robot_client.send_job_event(
+                                task_name=job_task_name or current_task or "unknown",
+                                status="cancelled",
+                                phase=job_phase,
+                                elapsed_time=elapsed,
+                                reason=emergency_stop_reason
+                            )
+                        job_start_time = None
+                        job_task_name = None
+                        job_phase = None
+                    
+                    current_state = STATE_IDLE
+                    current_task = None
+                    vision.reset()
+                
+                # Display emergency stop on frame
+                cv2.rectangle(frame, (0, 0), (FRAME_WIDTH, FRAME_HEIGHT), (0, 0, 255), 10)
+                cv2.rectangle(frame, (50, 180), (FRAME_WIDTH - 50, 300), (0, 0, 150), -1)
+                cv2.putText(frame, "EMERGENCY STOP", (120, 230), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 3)
+                cv2.putText(frame, "Press RESUME in monitoring system", (80, 270), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                
+                # Send frame to stream
+                if robot_client:
+                    robot_client.update_frame(frame)
+                
+                cv2.imshow("TonyPi", frame)
+                if cv2.waitKey(1) & 0xFF == ord('q'): break
+                continue
+            else:
+                # Emergency stop cleared
+                if emergency_stop_triggered:
+                    emergency_stop_triggered = False
+                    emergency_stop_reason = None
+                    print("✅ Emergency stop cleared - resuming normal operation")
+                    voice_module.speak("Emergency stop cleared. System ready.")
+
+            # ==========================================
             # 🚨 SAFETY CHECK: LIGHT SENSOR
             # ==========================================
             # Check if it is dark using your class
@@ -157,6 +259,21 @@ def main():
                 # If we were doing something, STOP and SPEAK.
                 if current_state != STATE_IDLE:
                     print("⚠️ DARKNESS DETECTED! ABORTING ACTION!")
+                    
+                    # 📊 JOB TIMING: Job cancelled due to darkness
+                    if robot_client and job_start_time:
+                        elapsed = time.time() - job_start_time
+                        robot_client.send_job_event(
+                            task_name=job_task_name or current_task,
+                            status="cancelled",
+                            phase=job_phase,
+                            elapsed_time=elapsed,
+                            reason="Darkness detected - safety stop"
+                        )
+                    job_start_time = None
+                    job_task_name = None
+                    job_phase = None
+                    
                     current_state = STATE_IDLE
                     current_task = None
                     vision.reset() # Reset vision memory
@@ -167,6 +284,10 @@ def main():
                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
                 
                 was_dark_last_frame = True
+                
+                # IMPORTANT: Send frame to stream BEFORE skipping (so red boundary appears in stream)
+                if robot_client:
+                    robot_client.update_frame(frame)
                 
                 # Skip the rest of the loop (Don't listen or look)
                 cv2.imshow("TonyPi", frame)
@@ -189,6 +310,20 @@ def main():
                     
                     if robot_client:
                         robot_client.send_log("WARNING", f"Obstacle detected at {distance}cm", "safety")
+                    
+                    # 📊 JOB TIMING: Job cancelled due to obstacle
+                    if robot_client and job_start_time:
+                        elapsed = time.time() - job_start_time
+                        robot_client.send_job_event(
+                            task_name=job_task_name or current_task,
+                            status="cancelled",
+                            phase=job_phase,
+                            elapsed_time=elapsed,
+                            reason=f"Obstacle detected at {distance}cm"
+                        )
+                    job_start_time = None
+                    job_task_name = None
+                    job_phase = None
                     
                     # Stop current action and return to idle
                     current_state = STATE_IDLE
@@ -214,7 +349,23 @@ def main():
                     
                     elif cmd == "Stop":
                         voice_module.speak("Stopping.")
+                        
+                        # 📊 JOB TIMING: Job cancelled by user command
+                        if robot_client and job_start_time:
+                            elapsed = time.time() - job_start_time
+                            robot_client.send_job_event(
+                                task_name=job_task_name or current_task,
+                                status="cancelled",
+                                phase=job_phase,
+                                elapsed_time=elapsed,
+                                reason="User stop command"
+                            )
+                        job_start_time = None
+                        job_task_name = None
+                        job_phase = None
+                        
                         current_state = STATE_IDLE
+                        current_task = None
                         vision.reset()
                     
                     # --- TASK COMMANDS: Auto-scan QR first, then search for cardboard ---
@@ -226,8 +377,23 @@ def main():
                             current_state = STATE_NAVIGATE_QR
                             vision.reset()
                             
+                            # ==========================================
+                            # 📊 JOB TIMING: Start tracking job
+                            # ==========================================
+                            job_start_time = time.time()
+                            job_task_name = cmd
+                            job_phase = "scanning"
+                            estimated_duration = TASK_ESTIMATED_DURATIONS.get(cmd, 30)
+                            
                             if robot_client:
                                 robot_client.send_log("INFO", f"Task started: {cmd}", "voice")
+                                # Send job started event
+                                robot_client.send_job_event(
+                                    task_name=cmd,
+                                    status="started",
+                                    phase="scanning",
+                                    estimated_duration=estimated_duration
+                                )
                         else:
                             voice_module.speak("Cannot start. It is too dark.")
 
@@ -260,9 +426,34 @@ def main():
                         # 📝 AUTO QR FLOW: After finding station, search for cardboard
                         # ====================================================
                         current_state = STATE_SEARCHING
+                        
+                        # 📊 JOB TIMING: Update phase to searching
+                        job_phase = "searching"
+                        if robot_client and job_start_time:
+                            elapsed = time.time() - job_start_time
+                            robot_client.send_job_event(
+                                task_name=job_task_name,
+                                status="in_progress",
+                                phase="searching",
+                                elapsed_time=elapsed
+                            )
                     else:
                         voice_module.speak("QR scan cancelled or timeout.")
                         current_state = STATE_IDLE
+                        
+                        # 📊 JOB TIMING: Job cancelled
+                        if robot_client and job_start_time:
+                            elapsed = time.time() - job_start_time
+                            robot_client.send_job_event(
+                                task_name=job_task_name,
+                                status="cancelled",
+                                phase="scanning",
+                                elapsed_time=elapsed,
+                                reason="QR scan timeout or cancelled"
+                            )
+                        job_start_time = None
+                        job_task_name = None
+                        job_phase = None
                         current_task = None
 
             elif current_state == STATE_SEARCHING:
@@ -310,6 +501,17 @@ def main():
                         # Now we switch to ACTING to perform the physical task.
                         current_state = STATE_ACTING
                         
+                        # 📊 JOB TIMING: Update phase to executing
+                        job_phase = "executing"
+                        if robot_client and job_start_time:
+                            elapsed = time.time() - job_start_time
+                            robot_client.send_job_event(
+                                task_name=job_task_name,
+                                status="in_progress",
+                                phase="executing",
+                                elapsed_time=elapsed
+                            )
+                        
                     elif nav_cmd == "TURN_LEFT":
                         cv2.arrowedLine(frame, (320, 240), (270, 240), (255, 255, 0), 3)
                         cv2.putText(frame, "TURN LEFT", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
@@ -323,6 +525,11 @@ def main():
             elif current_state == STATE_ACTING:
                 cv2.putText(frame, f"TASK: {current_task}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
                 
+                # Show job timing on screen
+                if job_start_time:
+                    elapsed = time.time() - job_start_time
+                    cv2.putText(frame, f"Time: {elapsed:.1f}s", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+                
                 if robot_client:
                     robot_client.send_log("INFO", f"Executing task: {current_task}", "action")
                 
@@ -331,15 +538,43 @@ def main():
                 # ====================================================
                 # We now run the specific script for the task we saved in Step 1.
                 print(f"[Main] Running action: {current_task}")
+                action_start = time.time()
                 success = vision.run_action(current_task)
+                action_duration = time.time() - action_start
                 
                 if not success:
                     time.sleep(3) 
                 
                 voice_module.speak(f"{current_task} complete.")
                 
-                if robot_client:
-                    robot_client.send_log("INFO", f"Task completed: {current_task}", "action")
+                # ==========================================
+                # 📊 JOB TIMING: Job completed - calculate total duration
+                # ==========================================
+                if job_start_time:
+                    total_duration = time.time() - job_start_time
+                    estimated = TASK_ESTIMATED_DURATIONS.get(job_task_name, 30)
+                    
+                    print(f"[Job Timer] Task '{job_task_name}' completed in {total_duration:.1f}s (estimated: {estimated}s)")
+                    
+                    if robot_client:
+                        robot_client.send_log("INFO", f"Task completed: {current_task} in {total_duration:.1f}s", "action")
+                        robot_client.send_job_event(
+                            task_name=job_task_name,
+                            status="completed",
+                            phase="done",
+                            elapsed_time=total_duration,
+                            estimated_duration=estimated,
+                            action_duration=action_duration,
+                            success=success
+                        )
+                else:
+                    if robot_client:
+                        robot_client.send_log("INFO", f"Task completed: {current_task}", "action")
+                
+                # Reset job timing
+                job_start_time = None
+                job_task_name = None
+                job_phase = None
                 
                 current_state = STATE_IDLE
                 current_task = None
