@@ -10,10 +10,10 @@ time.sleep(0.5)
 print("Testing ultrasonic sensor timing...")
 print("-" * 40)
 
-for i in range(10):
+for i in range(1):
     # Send trigger pulse
     lgpio.gpio_write(h, 28, 1)
-    time.sleep(0.00001)  # 10us
+    time.sleep(1)  # 10us
     lgpio.gpio_write(h, 28, 0)
     
     # Wait for echo to go HIGH
