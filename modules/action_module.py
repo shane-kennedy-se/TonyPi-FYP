@@ -164,6 +164,8 @@ class RobotActions:
             d_x = 20
             SERVO_PAN_MIN = 1000
             SERVO_PAN_MAX = 1900
+            HEAD_PAN_SERVO = 2
+            HEAD_TILT_SERVO = 1
             rrc_board = rrc.Board()
             ctl = Controller.Controller(rrc_board)
             
