@@ -1075,7 +1075,9 @@ class RobotClient:
         estimated_duration: float = None,
         action_duration: float = None,
         success: bool = None,
-        reason: str = None
+        reason: str = None,
+        items_done: int = None,
+        items_total: int = None
     ):
         """
         Send job timing event to monitoring system.
@@ -1089,6 +1091,8 @@ class RobotClient:
             action_duration: Duration of the physical action execution (seconds)
             success: Whether the job completed successfully
             reason: Reason for cancellation/failure (if applicable)
+            items_done: Number of items processed so far
+            items_total: Total number of items to process
         """
         if not self.is_connected:
             return
@@ -1121,11 +1125,26 @@ class RobotClient:
             if reason is not None:
                 data["reason"] = reason
             
+            # Item tracking for job progress
+            if items_done is not None:
+                data["items_done"] = items_done
+            
+            if items_total is not None:
+                data["items_total"] = items_total
+            
+            # Calculate percent from items if not already set via elapsed_time
+            if items_done is not None and items_total is not None and items_total > 0:
+                if "progress_percent" not in data:
+                    data["progress_percent"] = round((items_done / items_total) * 100, 1)
+                # Also include as 'percent' for legacy compatibility
+                data["percent"] = round((items_done / items_total) * 100, 1)
+            
             # Publish to job topic
             job_topic = f"tonypi/job/{self.robot_id}"
             self.client.publish(job_topic, json.dumps(data))
             
-            logger.info(f"Job event: {task_name} - {status} ({phase})")
+            logger.info(f"Job event: {task_name} - {status} ({phase})" + 
+                       (f" [{items_done}/{items_total}]" if items_done is not None else ""))
             
         except Exception as e:
             logger.error(f"Error sending job event: {e}")
