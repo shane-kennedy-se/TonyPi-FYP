@@ -1,6 +1,26 @@
 #!/usr/bin/python3
 # coding=utf8
 #4.拓展课程学习\8.拓展课程之传感器应用开发课程\第3课 躲避障碍\第2节 躲避障碍(4.Advanced Lessons\8.Sensor Development Course\Lesson3 Obstacle Avoidance\2.Obstacle Avoidance)
+
+# ============================================================
+# ULTRASONIC SENSOR GPIO PIN CONFIGURATION (HC-SR04)
+# ============================================================
+# 
+# TonyPi Robot Ultrasonic Sensor Wiring:
+# 
+#   Ultrasonic Sensor Pin    ->    Raspberry Pi GPIO
+#   ----------------------         ------------------
+#   VCC                      ->    5V (Pin 2 or 4)
+#   GND                      ->    GND (Pin 6, 9, 14, 20, 25, 30, 34, 39)
+#   TRIG (Trigger)           ->    GPIO 28 (Pin 38)
+#   ECHO (Echo)              ->    GPIO 29 (Pin 40)
+#
+# NOTE: The ECHO pin returns 5V, but Raspberry Pi GPIO is 3.3V tolerant.
+#       Consider using a voltage divider (1K + 2K resistors) for protection:
+#       ECHO -> 1K resistor -> GPIO 29 -> 2K resistor -> GND
+#
+# ============================================================
+
 import os
 import sys
 import time
@@ -14,6 +34,13 @@ import hiwonder.ActionGroupControl as AGC
 if sys.version_info.major == 2:
     print('Please run this program with python3!')
     sys.exit(0)
+
+# ----------------------------
+# GPIO Pin Definitions
+# ----------------------------
+TRIG_PIN = 28  # GPIO pin for ultrasonic trigger (output)
+ECHO_PIN = 29  # GPIO pin for ultrasonic echo (input)
+OBSTACLE_DISTANCE_THRESHOLD = 300  # mm - obstacle detected if closer than this
 
 # 超声波避障(ultrasonic obstacle avoidance)
 
