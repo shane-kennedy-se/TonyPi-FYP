@@ -122,8 +122,13 @@ class RobotActions:
             print(f"[ERROR] Label Insertion failed: {e}")
             return False
 
-    def run_transport_cardboard(self):
-        """Execute transport cardboard sequence with QR code navigation"""
+    def run_transport_cardboard(self, frame_getter=None):
+        """Execute transport cardboard sequence with QR code navigation
+        
+        Args:
+            frame_getter: A callable that returns the current camera frame.
+                         If None, will try to use qr_navigate's shared frame.
+        """
         print("=== TonyPi Pro: Transport Cardboard Sequence ===")
         time.sleep(2)
 
@@ -137,10 +142,19 @@ class RobotActions:
                 print(f"[ERROR] Required modules not available: {e}")
                 return False
 
-            # Setup camera and head servo control
+            # Setup head servo control (not camera - we use frame_getter)
             rrc_board = rrc.Board()
             ctl = Controller.Controller(rrc_board)
-            cap = cv2.VideoCapture(0)
+            
+            # If no frame_getter provided, try to use qr_navigate's shared frame
+            if frame_getter is None:
+                try:
+                    from modules import qr_navigate
+                    def frame_getter():
+                        return qr_navigate.current_frame_shared.copy() if qr_navigate.current_frame_shared is not None else None
+                except ImportError:
+                    print("[ERROR] No frame source available")
+                    return False
             
             HEAD_PAN_SERVO = 2
             HEAD_TILT_SERVO = 1
@@ -169,8 +183,9 @@ class RobotActions:
             SERVO_PAN_MAX = 1900
             
             while destination is None and time.time() < scan_timeout:
-                ret, frame = cap.read()
-                if not ret:
+                frame = frame_getter()
+                if frame is None:
+                    time.sleep(0.02)
                     continue
                 
                 frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -192,7 +207,6 @@ class RobotActions:
             
             if destination is None:
                 print("[WARNING] No QR code found, cannot determine destination")
-                cap.release()
                 return False
             
             # Center head for navigation
@@ -205,8 +219,9 @@ class RobotActions:
             TARGET_WIDTH = 145  # Width threshold indicating arrival
             
             while time.time() < nav_timeout:
-                ret, frame = cap.read()
-                if not ret:
+                frame = frame_getter()
+                if frame is None:
+                    time.sleep(0.02)
                     continue
                 
                 frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -243,8 +258,6 @@ class RobotActions:
                         d_x = -d_x
                     ctl.set_pwm_servo_pulse(HEAD_PAN_SERVO, x_dis, 20)
                     time.sleep(0.05)
-            
-            cap.release()
             
             # Put down the object
             print("Placing object down...")
