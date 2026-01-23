@@ -149,13 +149,13 @@ class VisionController:
         
         return all_dets
 
-    def run_action(self, label, camera=None):
+    def run_action(self, label, camera=None, get_frame=None):
         if label == "Peeling":
             return self.robot_actions.run_diecut_peeling()
         elif label == "Insert Label":
             return self.robot_actions.run_label_insertion()
         elif label == "Transport":
-            return self.robot_actions.run_transport_cardboard(camera=camera)
+            return self.robot_actions.run_transport_cardboard(camera=camera, get_frame=get_frame)
         elif label == "Flip":
             return self.robot_actions.run_sheet_flip_over()
         else:

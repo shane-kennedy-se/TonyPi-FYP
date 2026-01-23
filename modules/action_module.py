@@ -122,12 +122,13 @@ class RobotActions:
             print(f"[ERROR] Label Insertion failed: {e}")
             return False
 
-    def run_transport_cardboard(self, camera=None):
+    def run_transport_cardboard(self, camera=None, get_frame=None):
         """Execute transport cardboard sequence with QR code navigation
         
         Args:
-            camera: The camera object from main.py to use for getting frames.
-                   Must have a read() method that returns (ret, frame).
+            camera: The camera object from main.py (deprecated, use get_frame instead).
+            get_frame: A callable that returns (ret, frame) for getting latest frame.
+                      This is the preferred method to avoid camera threading conflicts.
         """
         print("=== TonyPi Pro: Transport Cardboard Sequence ===")
         time.sleep(2)
@@ -142,9 +143,13 @@ class RobotActions:
                 print(f"[ERROR] Required modules not available: {e}")
                 return False
 
-            # Check if camera was provided
-            if camera is None:
-                print("[ERROR] No camera provided. Cannot scan for QR.")
+            # Determine frame source - prefer get_frame function over raw camera
+            if get_frame is not None:
+                frame_source = get_frame
+            elif camera is not None:
+                frame_source = camera.read
+            else:
+                print("[ERROR] No camera or get_frame provided. Cannot scan for QR.")
                 return False
             
             # Setup head servo control
@@ -178,7 +183,7 @@ class RobotActions:
             SERVO_PAN_MAX = 1900
             
             while destination is None and time.time() < scan_timeout:
-                ret, frame = camera.read()
+                ret, frame = frame_source()
                 if not ret or frame is None:
                     time.sleep(0.02)
                     continue
@@ -214,7 +219,7 @@ class RobotActions:
             TARGET_WIDTH = 145  # Width threshold indicating arrival
             
             while time.time() < nav_timeout:
-                ret, frame = camera.read()
+                ret, frame = frame_source()
                 if not ret or frame is None:
                     time.sleep(0.02)
                     continue

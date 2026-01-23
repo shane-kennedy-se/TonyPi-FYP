@@ -270,8 +270,16 @@ def main():
                 # 📝 LOGIC STEP 3: EXECUTE ACTION
                 # ====================================================
                 # We now run the specific script for the task we saved in Step 1.
+                # Define a get_frame function that properly accesses the shared frame buffer
+                def get_frame_from_buffer():
+                    """Get latest frame from shared buffer with proper locking"""
+                    with frame_lock:
+                        if latest_frame is not None:
+                            return True, latest_frame.copy()
+                        return False, None
+                
                 print(f"[Main] Running action: {current_task}")
-                success = vision.run_action(current_task, camera=cap)
+                success = vision.run_action(current_task, camera=cap, get_frame=get_frame_from_buffer)
                 
                 if not success:
                     time.sleep(3) 
