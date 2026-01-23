@@ -122,30 +122,31 @@ class RobotActions:
             print(f"[ERROR] Label Insertion failed: {e}")
             return False
 
-    def run_transport_cardboard(self, camera=None, get_frame=None):
+    def run_transport_cardboard(self, camera=None):
         """Execute transport cardboard sequence with QR code navigation
         
         Uses the qr_navigate module for robust QR scanning and navigation.
         
         Args:
-            camera: The camera object from main.py (deprecated, use get_frame instead).
-            get_frame: A callable that returns (ret, frame) for getting latest frame.
-                      This is the preferred method to avoid camera threading conflicts.
+            camera: The camera object from main.py to use for getting frames.
+                   Must have a read() method that returns (ret, frame).
         """
         print("=== TonyPi Pro: Transport Cardboard Sequence ===")
         time.sleep(1)
 
         try:
-            # Import qr_navigate module
-            from modules import qr_navigate
-            
-            # Determine frame source - prefer get_frame function over raw camera
-            if get_frame is not None:
-                frame_source = get_frame
-            elif camera is not None:
-                frame_source = camera.read
-            else:
-                print("[ERROR] No camera or get_frame provided. Cannot scan for QR.")
+            # Import required modules
+            try:
+                import cv2
+                from pyzbar import pyzbar
+                from hiwonder import Controller, ros_robot_controller_sdk as rrc
+            except ImportError as e:
+                print(f"[ERROR] Required modules not available: {e}")
+                return False
+
+            # Check if camera was provided
+            if camera is None:
+                print("[ERROR] No camera provided. Cannot scan for QR.")
                 return False
 
             # Pick up the object
@@ -155,34 +156,91 @@ class RobotActions:
 
             # Use qr_navigate module to scan and navigate to destination
             print("Scanning for destination QR code...")
+            destination = None
+            scan_timeout = time.time() + 30  # 30 second timeout for initial scan
             
-            # Update the shared frame for qr_navigate
-            def update_navigation_frame():
-                """Continuously update the shared frame for navigation"""
-                ret, frame = frame_source()
-                if ret and frame is not None:
-                    qr_navigate.current_frame_shared = frame.copy()
+            # Head scanning variables
+            x_dis = PAN_CENTER
+            d_x = 20
+            SERVO_PAN_MIN = 1000
+            SERVO_PAN_MAX = 1900
             
-            # Start QR navigation
-            success = qr_navigate.start_qr_navigation_async(timeout=60)
-            if not success:
-                print("[ERROR] Navigation already in progress")
-                return False
-            
-            # Keep feeding frames to qr_navigate until navigation completes
-            print("Navigating to destination station...")
-            while qr_navigate.navigation_active:
-                update_navigation_frame()
+            while destination is None and time.time() < scan_timeout:
+                ret, frame = camera.read()
+                if not ret or frame is None:
+                    time.sleep(0.02)
+                    continue
+                
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                barcodes = pyzbar.decode(frame_rgb)
+                
+                if barcodes:
+                    barcode = barcodes[0]
+                    destination = barcode.data.decode("utf-8")
+                    print(f"Destination detected: {destination}")
+                    break
+                else:
+                    # Scan head left-right to find QR
+                    x_dis += d_x
+                    if x_dis >= SERVO_PAN_MAX or x_dis <= SERVO_PAN_MIN:
+                        d_x = -d_x
+                    ctl.set_pwm_servo_pulse(HEAD_PAN_SERVO, x_dis, 20)
+                
                 time.sleep(0.02)
             
-            # Get the result
-            destination = qr_navigate.get_navigation_result()
-            
-            if destination:
-                print(f"✅ Arrived at destination: {destination}")
-            else:
-                print("[WARNING] Navigation failed or timed out")
+            if destination is None:
+                print("[WARNING] No QR code found, cannot determine destination")
                 return False
+            
+            # Center head for navigation
+            ctl.set_pwm_servo_pulse(HEAD_PAN_SERVO, PAN_CENTER, 100)
+            time.sleep(0.3)
+            
+            # Navigate to destination by tracking QR and walking
+            print(f"Navigating to destination: {destination}")
+            nav_timeout = time.time() + 60
+            TARGET_WIDTH = 145  # Width threshold indicating arrival
+            
+            while time.time() < nav_timeout:
+                ret, frame = camera.read()
+                if not ret or frame is None:
+                    time.sleep(0.02)
+                    continue
+                
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                barcodes = pyzbar.decode(frame_rgb)
+                
+                if barcodes:
+                    barcode = barcodes[0]
+                    (x, y, w, h) = barcode.rect
+                    center_x = x + (w // 2)
+                    qr_width = w
+                    
+                    # Check if we've arrived (QR is large enough)
+                    if qr_width >= TARGET_WIDTH:
+                        print(f"Arrived at destination: {destination}")
+                        break
+                    
+                    # Align with QR position
+                    if center_x < 240:
+                        print("Turning left...")
+                        AGC.runActionGroup("turn_left1")
+                    elif center_x > 400:
+                        print("Turning right...")
+                        AGC.runActionGroup("turn_right1")
+                    else:
+                        # Walk forward using WalkOneStep1
+                        print("Walking forward...")
+                        AGC.runActionGroup("WalkOneStep1")
+                    
+                    time.sleep(0.3)
+                else:
+                    # QR lost, try scanning
+                    x_dis += d_x
+                    if x_dis >= SERVO_PAN_MAX or x_dis <= SERVO_PAN_MIN:
+                        d_x = -d_x
+                    ctl.set_pwm_servo_pulse(HEAD_PAN_SERVO, x_dis, 20)
+                    time.sleep(0.05)
             
             # Put down the object
             print("Placing cardboard down...")
