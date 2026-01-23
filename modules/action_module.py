@@ -164,6 +164,7 @@ class RobotActions:
             d_x = 20
             SERVO_PAN_MIN = 1000
             SERVO_PAN_MAX = 1900
+            ctl = Controller.Controller(rrc_board)
             
             while destination is None and time.time() < scan_timeout:
                 ret, frame = camera.read()
