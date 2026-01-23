@@ -236,10 +236,10 @@ class RobotActions:
                     # Align with QR position
                     if center_x < 240:
                         print("Turning left...")
-                        AGC.runActionGroup("turn_left")
+                        AGC.runActionGroup("turn_left1")
                     elif center_x > 400:
                         print("Turning right...")
-                        AGC.runActionGroup("turn_right")
+                        AGC.runActionGroup("turn_right1")
                     else:
                         # Walk forward using WalkOneStep1
                         print("Walking forward...")
