@@ -271,7 +271,7 @@ def main():
                 # ====================================================
                 # We now run the specific script for the task we saved in Step 1.
                 print(f"[Main] Running action: {current_task}")
-                success = vision.run_action(current_task)
+                success = vision.run_action(current_task, camera=cap)
                 
                 if not success:
                     time.sleep(3) 
