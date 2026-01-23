@@ -160,7 +160,7 @@ class RobotActions:
             scan_timeout = time.time() + 30  # 30 second timeout for initial scan
             
             # Head scanning variables
-            x_dis = PAN_CENTER
+            x_dis = PAN_CENTER = 1450
             d_x = 20
             SERVO_PAN_MIN = 1000
             SERVO_PAN_MAX = 1900
