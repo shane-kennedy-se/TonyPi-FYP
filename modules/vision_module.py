@@ -149,19 +149,15 @@ class VisionController:
         
         return all_dets
 
-    def run_action(self, label):
+    def run_action(self, label, camera=None):
         if label == "Peeling":
             return self.robot_actions.run_diecut_peeling()
         elif label == "Insert Label":
             return self.robot_actions.run_label_insertion()
         elif label == "Transport":
-            return self.robot_actions.run_transport_box()
+            return self.robot_actions.run_transport_cardboard(camera=camera)
         elif label == "Flip":
             return self.robot_actions.run_sheet_flip_over()
-        elif label == "Pick Up Cardboard":
-            return self.robot_actions.run_pick_up_cardboard()
-        elif label == "Transport Cardboard":
-            return self.robot_actions.run_transport_cardboard()
         else:
             print(f"[Vision] Unknown action: {label}")
             return False

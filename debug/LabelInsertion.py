@@ -12,7 +12,7 @@ if sys.version_info.major < 3:
 
 # Import TonyPi Action Group Control module
 if __name__ == '__main__':
-    sys.path.append('/home/pi/tonypi/functions')  # Path when running directly
+    sys.path.append('/home/pi/FYP_Robot/actions')  # Path when running directly
 else:
     sys.path.append(os.path.join(os.path.dirname(__file__), 'functions'))  # Path when imported
 
@@ -44,15 +44,14 @@ def main():
     try:
         # Step 1: Grab the label
         print("Step 1: Grabbing label...")
-        AGC.runActionGroup("GrabLabel")
+        AGC.runActionGroup("GrabSheetNew")
         time.sleep(STEP_DELAY)
 
-        # Confirm before proceeding
-        confirm_step("✅ Confirm to proceed with lifting the label")
+        
 
         # Step 2: Lift label for insertion
         print("Step 2: Lifting label for insertion...")
-        AGC.runActionGroup("LiftLabelInsertion")
+        AGC.runActionGroup("LiftLabelInsertion1")
         time.sleep(STEP_DELAY)
 
         # Step 3: Put label
@@ -60,8 +59,7 @@ def main():
         AGC.runActionGroup("PutLabel")
         time.sleep(STEP_DELAY)
 
-        # Confirm before final step
-        confirm_step("✅ Confirm to proceed with putting down label and standing up")
+        
 
         # Step 4: Put down label and stand up
         print("Step 4: Putting down label and standing up...")

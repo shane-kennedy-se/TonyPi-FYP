@@ -307,38 +307,28 @@ def main():
             # ==========================================
             # 🚨 OBSTACLE DETECTION: ULTRASONIC SENSOR
             # ==========================================
-            if current_state != STATE_IDLE:
-                distance = ultrasonic.get_distance()
-                if distance is not None and ultrasonic.is_obstacle_detected():
-                    print(f"⚠️ OBSTACLE DETECTED at {distance}cm! ABORTING ACTION!")
-                    voice_module.speak(f"Obstacle detected. Stopping.")
-                    
-                    if robot_client:
-                        robot_client.send_log("WARNING", f"Obstacle detected at {distance}cm", "safety")
-                    
-                    # 📊 JOB TIMING: Job cancelled due to obstacle
-                    if robot_client and job_start_time:
-                        elapsed = time.time() - job_start_time
-                        robot_client.send_job_event(
-                            task_name=job_task_name or current_task,
-                            status="cancelled",
-                            phase=job_phase,
-                            elapsed_time=elapsed,
-                            reason=f"Obstacle detected at {distance}cm"
-                        )
-                    job_start_time = None
-                    job_task_name = None
-                    job_phase = None
-                    
-                    # Stop current action and return to idle
+            # Always check for obstacles when robot is online (like light sensor)
+            if ultrasonic.is_obstacle_detected():
+                distance = ultrasonic.last_distance
+                print(f"⚠️ OBSTACLE DETECTED at {distance}cm!")
+                voice_module.speak("Obstacle detected. Stopping now")
+                
+                # If we were doing something, STOP and return to idle
+                if current_state != STATE_IDLE:
+                    print("⚠️ ABORTING ACTION DUE TO OBSTACLE!")
                     current_state = STATE_IDLE
                     current_task = None
                     vision.reset()
-                    
-                    # Visual warning
-                    cv2.rectangle(frame, (0,0), (FRAME_WIDTH, FRAME_HEIGHT), (0, 165, 255), 5)
-                    cv2.putText(frame, f"🚨 OBSTACLE: {distance}cm", (150, 240), 
-                               cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 165, 255), 3)
+                
+                # Visual warning
+                cv2.rectangle(frame, (0,0), (FRAME_WIDTH, FRAME_HEIGHT), (0, 165, 255), 5)
+                cv2.putText(frame, f"OBSTACLE: {distance}cm", (150, 240), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 165, 255), 3)
+                
+                # Display and continue to next frame
+                cv2.imshow("TonyPi", frame)
+                if cv2.waitKey(1) & 0xFF == ord('q'): break
+                continue
 
             # ==========================================
             # 🎤 VOICE COMMANDS
@@ -553,7 +543,7 @@ def main():
                 # We now run the specific script for the task we saved in Step 1.
                 print(f"[Main] Running action: {current_task}")
                 action_start = time.time()
-                success = vision.run_action(current_task)
+                success = vision.run_action(current_task, camera=cap)
                 action_duration = time.time() - action_start
                 
                 if not success:
