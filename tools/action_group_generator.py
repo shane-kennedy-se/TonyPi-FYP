@@ -460,7 +460,7 @@ def print_servo_reference():
 # EXAMPLE: HOW TO CREATE AN ACTION GROUP
 # =============================================================================
 
-def example_create_action():
+def create_action():
     """
     Example: Creating an action group step by step.
     
@@ -557,7 +557,7 @@ def example_create_action():
 # EXAMPLE: USING KINEMATICS TO CREATE ACTION GROUP
 # =============================================================================
 
-def example_create_action_with_kinematics():
+def create_action_with_kinematics():
     """
     To calculate joint angles from target foot positions. 
     We specify WHERE we want the foot (x, y, z coordinates), 
@@ -693,11 +693,11 @@ MODULES RELATIONSHIP:
     print("\n" + "="*60)
     print("EXAMPLE 1: Direct Pulse Values")
     print("="*60)
-    example_create_action()
+    create_action()
     
     # Run example with kinematics
     print("\n" + "="*60)
     print("EXAMPLE 2: Using Kinematics")
     print("="*60)
-    example_create_action_with_kinematics()
+    create_action_with_kinematics()
 
