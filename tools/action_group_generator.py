@@ -554,6 +554,119 @@ def example_create_action():
 
 
 # =============================================================================
+# EXAMPLE: USING KINEMATICS TO CREATE ACTION GROUP
+# =============================================================================
+
+def example_create_action_with_kinematics():
+    """
+    To calculate joint angles from target foot positions. 
+    We specify WHERE we want the foot (x, y, z coordinates), 
+    and the kinematics module uses the Law of Cosines to calculate the required 
+    hip, knee, and ankle angles. The servo controller then converts those angles 
+    to pulse signals.
+    
+    This demonstrates the full pipeline:
+    1. Define target POSITIONS (x, y, z in cm)
+    2. Kinematics calculates joint ANGLES
+    3. Servo controller converts angles to PULSES
+    4. Export to .d6a file
+    
+    USE THIS METHOD WHEN:
+    - You know WHERE you want the foot to be
+    - You don't want to manually calculate angles
+    - You need mathematically precise positioning
+    """
+    
+    # Check if kinematics is available
+    if not KINEMATICS_AVAILABLE:
+        print("[ERROR] kinematics.py not found - cannot run this example")
+        return None
+    
+    if not SERVO_CONTROLLER_AVAILABLE:
+        print("[ERROR] servo_controller.py not found - cannot run this example")
+        return None
+    
+    print("\n" + "="*60)
+    print("EXAMPLE: Creating Action with KINEMATICS")
+    print("="*60)
+    
+    # Step 1: Initialize kinematics and servo controller
+    leg_ik = LegIK(RobotDimensions())
+    controller = ServoController()
+    
+    # Step 2: Create the action sequence
+    action = ActionSequence("CrouchWithKinematics")
+    
+    # -------------------------------------------------------------------------
+    # KEYFRAME 1: Standing Position
+    # Define foot positions in 3D space (x, y, z in centimeters)
+    # -------------------------------------------------------------------------
+    kf1 = Keyframe(duration_ms=500)
+    
+    # Standing: feet directly below hips
+    # x = forward/backward, y = left/right, z = up/down (negative = down)
+    left_foot_stand = Point3D(x=0, y=2.8, z=-8.0)   # Left foot position
+    right_foot_stand = Point3D(x=0, y=-2.8, z=-8.0)  # Right foot position
+    
+    # Use kinematics to calculate and set servo positions
+    kf1.set_leg_from_kinematics(left_foot_stand, is_left=True, 
+                                 leg_ik=leg_ik, controller=controller)
+    kf1.set_leg_from_kinematics(right_foot_stand, is_left=False,
+                                 leg_ik=leg_ik, controller=controller)
+    
+    # Arms at neutral (using direct pulse for simplicity)
+    kf1.set_servo(5, 1500)   # Left shoulder
+    kf1.set_servo(12, 1500)  # Right shoulder
+    
+    action.add_keyframe(kf1)
+    
+    # -------------------------------------------------------------------------
+    # KEYFRAME 2: Crouch Position
+    # Move feet forward and up (closer to body)
+    # -------------------------------------------------------------------------
+    kf2 = Keyframe(duration_ms=600)
+    
+    # Crouching: feet move forward and up
+    left_foot_crouch = Point3D(x=2.0, y=2.8, z=-6.0)   # Forward and up
+    right_foot_crouch = Point3D(x=2.0, y=-2.8, z=-6.0)
+    
+    # Kinematics automatically calculates: hip, knee, ankle angles
+    kf2.set_leg_from_kinematics(left_foot_crouch, is_left=True,
+                                 leg_ik=leg_ik, controller=controller)
+    kf2.set_leg_from_kinematics(right_foot_crouch, is_left=False,
+                                 leg_ik=leg_ik, controller=controller)
+    
+    action.add_keyframe(kf2)
+    
+    # -------------------------------------------------------------------------
+    # KEYFRAME 3: Return to Standing
+    # -------------------------------------------------------------------------
+    kf3 = Keyframe(duration_ms=500)
+    
+    # Back to standing position
+    kf3.set_leg_from_kinematics(left_foot_stand, is_left=True,
+                                 leg_ik=leg_ik, controller=controller)
+    kf3.set_leg_from_kinematics(right_foot_stand, is_left=False,
+                                 leg_ik=leg_ik, controller=controller)
+    
+    action.add_keyframe(kf3)
+    
+    # -------------------------------------------------------------------------
+    # Print summary and export
+    # -------------------------------------------------------------------------
+    action.print_summary()
+    
+    # Export to actions folder
+    filepath = action.export_d6a()
+    
+    print(f"\n[SUCCESS] Action created using KINEMATICS!")
+    print(f"[INFO] Foot positions were converted to joint angles automatically")
+    print(f"[USAGE] In code: AGC.runActionGroup('{action.name}')")
+    
+    return action
+
+
+# =============================================================================
 # MAIN
 # =============================================================================
 
@@ -563,12 +676,6 @@ if __name__ == "__main__":
     print("="*60)
     print("""
 This tool generates .d6a action files for the TonyPi robot.
-
-HOW IT WORKS:
-    1. You input: Servo ID, Pulse value (500-2500), Duration (ms)
-    2. Generator creates keyframes with your values
-    3. Export saves .d6a file to actions/ folder
-    4. Use AGC.runActionGroup("name") to run the action
 
 MODULES RELATIONSHIP:
     ┌──────────────────────────────────────────────────────────┐
@@ -582,5 +689,15 @@ MODULES RELATIONSHIP:
     # Print servo reference
     print_servo_reference()
     
-    # Run example
+    # Run example with direct pulse values
+    print("\n" + "="*60)
+    print("EXAMPLE 1: Direct Pulse Values")
+    print("="*60)
     example_create_action()
+    
+    # Run example with kinematics
+    print("\n" + "="*60)
+    print("EXAMPLE 2: Using Kinematics")
+    print("="*60)
+    example_create_action_with_kinematics()
+
