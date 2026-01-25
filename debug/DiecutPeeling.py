@@ -12,9 +12,9 @@ if sys.version_info.major < 3:
 
 # Import TonyPi Action Group Control module
 if __name__ == '__main__':
-    sys.path.append('/home/pi/tonypi/functions')  # Path when running directly
+    sys.path.append('/home/pi/TonyPi-FYP/actions')  # Path when running directly
 else:
-    sys.path.append(os.path.join(os.path.dirname(__file__), 'functions'))  # Path when imported
+    sys.path.append(os.path.join(os.path.dirname(__file__), 'actions'))  # Path when imported
 
 import hiwonder.ActionGroupControl as AGC
 from hiwonder import Controller
