@@ -125,12 +125,14 @@ class RobotActions:
     def run_transport_cardboard(self, camera=None):
         """Execute transport cardboard sequence with QR code navigation
         
+        Uses the qr_navigate module for robust QR scanning and navigation.
+        
         Args:
             camera: The camera object from main.py to use for getting frames.
                    Must have a read() method that returns (ret, frame).
         """
         print("=== TonyPi Pro: Transport Cardboard Sequence ===")
-        time.sleep(2)
+        time.sleep(1)
 
         try:
             # Import required modules
@@ -146,36 +148,26 @@ class RobotActions:
             if camera is None:
                 print("[ERROR] No camera provided. Cannot scan for QR.")
                 return False
-            
-            # Setup head servo control
-            rrc_board = rrc.Board()
-            ctl = Controller.Controller(rrc_board)
-            
-            HEAD_PAN_SERVO = 2
-            HEAD_TILT_SERVO = 1
-            PAN_CENTER = 1450
-            TILT_CENTER = 1150
-            
-            # Center head for scanning
-            ctl.set_pwm_servo_pulse(HEAD_TILT_SERVO, TILT_CENTER, 100)
-            ctl.set_pwm_servo_pulse(HEAD_PAN_SERVO, PAN_CENTER, 100)
-            time.sleep(0.5)
 
             # Pick up the object
-            print("Picking up object...")
+            print("Picking up cardboard...")
             AGC.runActionGroup("PickUpDiecut2")
-            time.sleep(0.5)
+            time.sleep(1)
 
-            # Scan for QR code to determine destination
+            # Use qr_navigate module to scan and navigate to destination
             print("Scanning for destination QR code...")
             destination = None
             scan_timeout = time.time() + 30  # 30 second timeout for initial scan
             
             # Head scanning variables
-            x_dis = PAN_CENTER
+            x_dis = PAN_CENTER = 1450
             d_x = 20
             SERVO_PAN_MIN = 1000
             SERVO_PAN_MAX = 1900
+            HEAD_PAN_SERVO = 2
+            HEAD_TILT_SERVO = 1
+            rrc_board = rrc.Board()
+            ctl = Controller.Controller(rrc_board)
             
             while destination is None and time.time() < scan_timeout:
                 ret, frame = camera.read()
@@ -255,14 +247,17 @@ class RobotActions:
                     time.sleep(0.05)
             
             # Put down the object
-            print("Placing object down...")
+            print("Placing cardboard down...")
             AGC.runActionGroup("PutDown1")
+            time.sleep(1)
 
             print("=== Task Complete ===")
             return True
 
         except Exception as e:
             print(f"[ERROR] Transport Cardboard failed: {e}")
+            import traceback
+            traceback.print_exc()
             return False
 
     def run_sheet_flip_over(self):
